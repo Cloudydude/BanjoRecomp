@@ -1,0 +1,131 @@
+# Config file for Banjo-Kazooie NTSC 1.0 Recompilation.
+
+[input]
+entrypoint = 0x80000400
+# Paths are relative to the location of this config file.
+output_func_path = "RecompiledFuncs"
+# symbols_file_path = "BanjoRecompSyms/bk.us.rev0.syms.toml"
+rom_file_path = "banjo.us.v10.decompressed.z64"
+elf_path = "banjo.us.v10.elf"
+
+manual_funcs = [
+    { name = "__n_CSPVoiceHandler", section = ".core1", vram = 0x8025E438, size = 0x684 },
+    { name = "__code7AF80_func_803036A0", section = ".core2", vram = 0x803036A0, size = 0x160 },
+    { name = "__code7AF80_func_80303960", section = ".core2", vram = 0x80303960, size = 0x190 },
+    { name = "_gcdialog_freeZoomboxes", section = ".core2", vram = 0x8030F030, size = 0x48 },
+    { name = "__actor_free", section = ".core2", vram = 0x80328028, size = 0xF4 },
+    { name = "_baModel_preDraw", section = ".core2", vram = 0x80291ac4, size = 0x2C },
+    { name = "__chFrogMinigame_spawnJiggy", section = ".BGS", vram = 0x8038cb20, size = 0x28 },
+    { name = "__chFrogMinigame_textCallback", section = ".BGS", vram = 0x8038cb48, size = 0x6C },
+]
+
+[patches]
+stubs = [
+]
+
+renamed = [
+    "wmemcpy"
+]
+
+ignored = [
+    # Boot segment libultra duplicates
+    "boot___ll_div",
+    "boot___ll_lshift",
+    "boot___ll_mod",
+    "boot___ll_mul",
+    "boot___ll_rem",
+    "boot___ll_rshift",
+    "boot___ull_div",
+    "boot___ull_divremi",
+    "boot___ull_rem",
+    "boot___ull_rshift",
+    "boot___osInitialize_common",
+    "boot_osPiRawStartDma",
+    "boot_osPiGetStatus",
+    "boot___osSetSR",
+    "boot___osGetSR",
+    "boot___osSetFpcCsr",
+    "boot___osSiRawReadIo",
+    "boot___osSiRawWriteIo",
+    "boot___osExceptionPreamble",
+    "boot___osExceptionPreamble2",
+    "boot___osException",
+    "boot_send_mesg",
+    "boot_handle_CpU",
+    "boot___osEnqueueAndYield",
+    "boot___osEnqueueThread",
+    "boot___osPopThread",
+    "boot___osDispatchThread",
+    "boot___osCleanupThread",
+    "boot_osWritebackDCache",
+    "boot_osInvalICache",
+    "boot_osMapTLBRdb",
+    "boot_osPiRawReadIo",
+    "boot_osVirtualToPhysical",
+    "boot___osSiDeviceBusy",
+    "boot___osDequeueThread",
+    "boot___osLeoInterrupt",
+    "boot_osSetEventMesg",
+    "boot_func_80003A30",
+    "boot_osDestroyThread",
+    "boot___osProbeTLB",
+    "boot_osLeoDiskInit",
+    "boot_osEPiRawStartDma",
+    "boot___osDisableInt",
+    "boot___osRestoreInt",
+    "boot_osCreatePiManager",
+    "boot_osCartRomInit",
+    "boot_osCreateMesgQueue",
+    "boot___osPiCreateAccessQueue",
+    "boot___osPiGetAccess",
+    "boot___osPiRelAccess",
+    "boot_osGetThreadPri",
+    "boot_osSetThreadPri",
+    "boot_osCreateThread",
+    "boot___osDevMgrMain",
+    "boot_osStartThread",
+    "boot_osSendMesg",
+    "boot_osRecvMesg",
+    "boot___osResetGlobalIntMask",
+    "boot_osEPiRawWriteIo",
+    "boot_osEPiRawReadIo",
+    "boot___osSetGlobalIntMask",
+    "boot_osYieldThread",
+    # Unnamed exceptasm functions:
+    "func_8026A2E0",
+    "func_8026A824",
+    # Misspelled functions
+    "osWriteBackDCacheAll",
+]
+
+# Single-instruction patches
+
+[[patches.instruction]]
+func = "viewport_setRenderPerspectiveMatrix"
+vram = 0x8024C9A8
+value = 0x3C0E8000 # lui $t6, 0xA000 -> lui $t6, 0x8000
+
+[[patches.instruction]]
+func = "anctrl_setDuration"
+vram = 0x8028768C
+value = 0x3C0E8000 # lui $t6, 0xA000 -> lui $t6, 0x8000
+
+[[patches.instruction]]
+func = "func_802D3DA4"
+vram = 0x802D3DAC
+value = 0x3C0E8000 # lui $t6, 0xA000 -> lui $t6, 0x8000
+
+[[patches.instruction]]
+func = "func_8038F4C0"
+vram = 0x8038F4E0
+value = 0x3C0E8000 # lui $t6, 0xA000 -> lui $t6, 0x8000
+
+[[patches.instruction]]
+func = "func_8038AC04"
+vram = 0x8038AC0C
+value = 0x3C0E8000 # lui $t6, 0xA000 -> lui $t6, 0x8000
+
+[[patches.instruction]]
+func = "func_80388D48"
+vram = 0x80388D50
+value = 0x3C0E8000 # lui $t6, 0xA000 -> lui $t6, 0x8000
