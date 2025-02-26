@@ -46,7 +46,7 @@ char* strchr(const char* s, int c) {
 static char spaces[] = "                                ";
 static char zeroes[] = "00000000000000000000000000000000";
 
-static void _Putfld(_Pft *px, va_list *pap, char code, char *ac);
+void _Putfld(_Pft *px, va_list *pap, char code, char *ac);
 
 int _Printf(void* pfn(void*,const char*,size_t), void *arg, const char *fmt, va_list ap) {
     _Pft x;
@@ -145,7 +145,7 @@ int _Printf(void* pfn(void*,const char*,size_t), void *arg, const char *fmt, va_
     return 0;
 }
 
-static void _Putfld(_Pft *px, va_list *pap, char code, char *ac) {
+void _Putfld(_Pft *px, va_list *pap, char code, char *ac) {
     px->n0 = px->nz0 = px->n1 = px->nz1 = px->n2 =
         px->nz2 = 0;
 
