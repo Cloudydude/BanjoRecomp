@@ -1,4 +1,4 @@
-﻿#include "ui_mod_menu.h"
+#include "ui_mod_menu.h"
 #include "recomp_ui.h"
 
 #include "librecomp/mods.hpp"
@@ -468,7 +468,7 @@ void ModMenu::create_mod_list() {
 }
 
 ModMenu::ModMenu(Element *parent) : Element(parent) {
-    game_mod_id = "mm";
+    game_mod_id = "bk";
 
     ContextId context = get_current_context();
 
