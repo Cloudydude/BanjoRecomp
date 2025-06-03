@@ -7,6 +7,7 @@ namespace recompui {
 
     constexpr std::string_view checked_state = "checked";
     constexpr std::string_view hover_state = "hover";
+    constexpr std::string_view focus_state = "focus";
     constexpr std::string_view disabled_state = "disabled";
 
     struct Color {
@@ -21,6 +22,7 @@ namespace recompui {
         Pointer
     };
 
+    // These two enums must be kept in sync with patches/recompui_event_structs.h!
     enum class EventType {
         None,
         Click,
@@ -30,6 +32,8 @@ namespace recompui {
         Drag,
         Text,
         Update,
+        Navigate,
+        MouseButton,
         Count
     };
 
@@ -38,6 +42,20 @@ namespace recompui {
         Start,
         Move,
         End
+    };
+
+    enum class NavDirection {
+        Up,
+        Right,
+        Down,
+        Left
+    };
+
+    enum class MouseButton {
+        Left,
+        Right,
+        Middle,
+        Count
     };
 
     template <typename Enum, typename = std::enable_if_t<std::is_enum_v<Enum>>>
@@ -77,7 +95,18 @@ namespace recompui {
         std::string text;
     };
 
-    using EventVariant = std::variant<EventClick, EventFocus, EventHover, EventEnable, EventDrag, EventText, std::monostate>;
+    struct EventNavigate {
+        NavDirection direction;
+    };
+
+    struct EventMouseButton {
+        float x;
+        float y;
+        MouseButton button;
+        bool pressed;
+    };
+
+    using EventVariant = std::variant<EventClick, EventFocus, EventHover, EventEnable, EventDrag, EventText, EventNavigate, EventMouseButton, std::monostate>;
 
     struct Event {
         EventType type;
@@ -132,6 +161,20 @@ namespace recompui {
             e.variant = std::monostate{};
             return e;
         }
+
+        static Event navigate_event(NavDirection direction) {
+            Event e;
+            e.type = EventType::Navigate;
+            e.variant = EventNavigate{ direction };
+            return e;
+        }
+
+        static Event mousebutton_event(float x, float y, MouseButton button, bool pressed) {
+            Event e;
+            e.type = EventType::MouseButton;
+            e.variant = EventMouseButton{ x, y, button, pressed };
+            return e;
+        }
     };
 
     enum class Display {
@@ -151,6 +194,11 @@ namespace recompui {
         TableCell
     };
 
+    enum class Visibility {
+        Visible,
+        Hidden
+    };
+
     enum class Position {
         Absolute,
         Relative
@@ -167,7 +215,9 @@ namespace recompui {
 
     enum class FlexDirection {
         Row,
-        Column
+        Column,
+        RowReverse,
+        ColumnReverse
     };
 
     enum class AlignItems {

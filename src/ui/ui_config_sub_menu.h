@@ -16,20 +16,28 @@ namespace recompui {
 class ConfigOptionElement : public Element {
 protected:
     Label *name_label = nullptr;
-    std::string id;
+    std::string option_id;
     std::string name;
     std::string description;
     std::function<void(ConfigOptionElement *, bool)> hover_callback = nullptr;
+    std::function<void(const std::string &, bool)> focus_callback = nullptr;
 
     virtual void process_event(const Event &e) override;
+    std::string_view get_type_name() override { return "ConfigOptionElement"; }
 public:
     ConfigOptionElement(Element *parent);
     virtual ~ConfigOptionElement();
-    void set_id(std::string_view id);
+    void set_option_id(std::string_view id);
     void set_name(std::string_view name);
     void set_description(std::string_view description);
     void set_hover_callback(std::function<void(ConfigOptionElement *, bool)> callback);
+    void set_focus_callback(std::function<void(const std::string &, bool)> callback);
     const std::string &get_description() const;
+    void set_nav_auto(NavDirection dir) override { get_focus_element()->set_nav_auto(dir); }
+    void set_nav_none(NavDirection dir) override { get_focus_element()->set_nav_none(dir); }
+    void set_nav(NavDirection dir, Element* element) override { get_focus_element()->set_nav(dir, element); }
+    void set_nav_manual(NavDirection dir, const std::string& target) override { get_focus_element()->set_nav_manual(dir, target); }
+    virtual Element* get_focus_element() { return this; }
 };
 
 class ConfigOptionSlider : public ConfigOptionElement {
@@ -38,8 +46,10 @@ protected:
     std::function<void(const std::string &, double)> callback;
 
     void slider_value_changed(double v);
+    std::string_view get_type_name() override { return "ConfigOptionSlider"; }
 public:
     ConfigOptionSlider(Element *parent, double value, double min_value, double max_value, double step_value, bool percent, std::function<void(const std::string &, double)> callback);
+    Element* get_focus_element() override { return slider; }
 };
 
 class ConfigOptionTextInput : public ConfigOptionElement {
@@ -48,8 +58,10 @@ protected:
     std::function<void(const std::string &, const std::string &)> callback;
 
     void text_changed(const std::string &text);
+    std::string_view get_type_name() override { return "ConfigOptionTextInput"; }
 public:
     ConfigOptionTextInput(Element *parent, std::string_view value, std::function<void(const std::string &, const std::string &)> callback);
+    Element* get_focus_element() override { return text_input; }
 };
 
 class ConfigOptionRadio : public ConfigOptionElement {
@@ -58,8 +70,10 @@ protected:
     std::function<void(const std::string &, uint32_t)> callback;
 
     void index_changed(uint32_t index);
+    std::string_view get_type_name() override { return "ConfigOptionRadio"; }
 public:
     ConfigOptionRadio(Element *parent, uint32_t value, const std::vector<std::string> &options, std::function<void(const std::string &, uint32_t)> callback);
+    Element* get_focus_element() override { return radio; }    
 };
 
 class ConfigSubMenu : public Element {
@@ -72,12 +86,13 @@ private:
     Container *config_container = nullptr;
     ScrollContainer *config_scroll_container = nullptr;
     std::vector<ConfigOptionElement *> config_option_elements;
-    std::unordered_set<ConfigOptionElement *> hover_option_elements;
+    ConfigOptionElement * description_option_element = nullptr;
 
     void back_button_pressed();
-    void option_hovered(ConfigOptionElement *option, bool active);
+    void set_description_option_element(ConfigOptionElement *option, bool active);
     void add_option(ConfigOptionElement *option, std::string_view id, std::string_view name, std::string_view description);
-
+protected:
+    std::string_view get_type_name() override { return "ConfigSubMenu"; }
 public:
     ConfigSubMenu(Element *parent);
     virtual ~ConfigSubMenu();

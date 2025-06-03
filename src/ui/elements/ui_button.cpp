@@ -4,8 +4,10 @@
 
 namespace recompui {
 
-    Button::Button(Element *parent, const std::string &text, ButtonStyle style) : Element(parent, Events(EventType::Click, EventType::Hover, EventType::Enable), "button") {
+    Button::Button(Element *parent, const std::string &text, ButtonStyle style) : Element(parent, Events(EventType::Click, EventType::Hover, EventType::Enable, EventType::Focus), "button", true) {
         this->style = style;
+
+        enable_focus();
 
         set_text(text);
         set_display(Display::Block);
@@ -21,6 +23,7 @@ namespace recompui {
         set_color(Color{ 204, 204, 204, 255 });
         set_tab_index(TabIndex::Auto);
         hover_style.set_color(Color{ 242, 242, 242, 255 });
+        focus_style.set_color(Color{ 242, 242, 242, 255 });
         disabled_style.set_color(Color{ 204, 204, 204, 128 });
         hover_disabled_style.set_color(Color{ 242, 242, 242, 128 });
 
@@ -34,6 +37,8 @@ namespace recompui {
             set_background_color({ 185, 125, 242, background_opacity });
             hover_style.set_border_color({ 185, 125, 242, border_hover_opacity });
             hover_style.set_background_color({ 185, 125, 242, background_hover_opacity });
+            focus_style.set_border_color({ 185, 125, 242, border_hover_opacity });
+            focus_style.set_background_color({ 185, 125, 242, background_hover_opacity });
             disabled_style.set_border_color({ 185, 125, 242, border_opacity / 4 });
             disabled_style.set_background_color({ 185, 125, 242, background_opacity / 4 });
             hover_disabled_style.set_border_color({ 185, 125, 242, border_hover_opacity / 4 });
@@ -45,6 +50,8 @@ namespace recompui {
             set_background_color({ 23, 214, 232, background_opacity });
             hover_style.set_border_color({ 23, 214, 232, border_hover_opacity });
             hover_style.set_background_color({ 23, 214, 232, background_hover_opacity });
+            focus_style.set_border_color({ 23, 214, 232, border_hover_opacity });
+            focus_style.set_background_color({ 23, 214, 232, background_hover_opacity });
             disabled_style.set_border_color({ 23, 214, 232, border_opacity / 4 });
             disabled_style.set_background_color({ 23, 214, 232, background_opacity / 4 });
             hover_disabled_style.set_border_color({ 23, 214, 232, border_hover_opacity / 4 });
@@ -57,6 +64,7 @@ namespace recompui {
         }
 
         add_style(&hover_style, hover_state);
+        add_style(&focus_style, focus_state);
         add_style(&disabled_style, disabled_state);
         add_style(&hover_disabled_style, { hover_state, disabled_state });
 
@@ -73,10 +81,24 @@ namespace recompui {
             }
             break;
         case EventType::Hover: 
-            set_style_enabled(hover_state, std::get<EventHover>(e.variant).active);
+            set_style_enabled(hover_state, std::get<EventHover>(e.variant).active && is_enabled());
             break;
         case EventType::Enable:
-            set_style_enabled(disabled_state, !std::get<EventEnable>(e.variant).active);
+            {
+                bool enable_active = std::get<EventEnable>(e.variant).active;
+                set_style_enabled(disabled_state, !enable_active);
+                if (enable_active) {
+                    set_cursor(Cursor::Pointer);
+                    set_focusable(true);
+                }
+                else {
+                    set_cursor(Cursor::None);
+                    set_focusable(false);
+                }
+            }
+            break;
+        case EventType::Focus:
+            set_style_enabled(focus_state, std::get<EventFocus>(e.variant).active);
             break;
         case EventType::Update:
             break;

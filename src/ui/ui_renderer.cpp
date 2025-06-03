@@ -22,6 +22,9 @@
 #ifdef _WIN32
 #   include "InterfaceVS.hlsl.dxil.h"
 #   include "InterfacePS.hlsl.dxil.h"
+#elif defined(__APPLE__)
+#   include "InterfaceVS.hlsl.metal.h"
+#   include "InterfacePS.hlsl.metal.h"
 #endif
 
 #ifdef _WIN32
@@ -31,6 +34,13 @@
 #    define GET_SHADER_SIZE(name, format) \
         ((format) == RT64::RenderShaderFormat::SPIRV ? std::size(name##BlobSPIRV) : \
         (format) == RT64::RenderShaderFormat::DXIL ? std::size(name##BlobDXIL) : 0)
+#elif defined(__APPLE__)
+#    define GET_SHADER_BLOB(name, format) \
+((format) == RT64::RenderShaderFormat::SPIRV ? name##BlobSPIRV : \
+(format) == RT64::RenderShaderFormat::METAL ? name##BlobMSL : nullptr)
+#    define GET_SHADER_SIZE(name, format) \
+((format) == RT64::RenderShaderFormat::SPIRV ? std::size(name##BlobSPIRV) : \
+(format) == RT64::RenderShaderFormat::METAL ? std::size(name##BlobMSL) : 0)
 #else
 #    define GET_SHADER_BLOB(name, format) \
         ((format) == RT64::RenderShaderFormat::SPIRV ? name##BlobSPIRV : nullptr)
@@ -62,7 +72,19 @@ T from_bytes_le(const char* input) {
     return *reinterpret_cast<const T*>(input);
 }
 
-typedef std::pair<std::string, std::vector<char>> ImageFromBytes;
+enum class ImageType {
+    File,
+    RGBA32
+};
+
+struct ImageFromBytes {
+    ImageType type;
+    // Dimensions only used for RGBA32 data. Files pull the size from the file data. 
+    uint32_t width;
+    uint32_t height;
+    std::string name;
+    std::vector<char> bytes;
+};
 
 namespace recompui {
 class RmlRenderInterface_RT64_impl : public Rml::RenderInterfaceCompatibility {
@@ -128,7 +150,7 @@ class RmlRenderInterface_RT64_impl : public Rml::RenderInterfaceCompatibility {
     bool scissor_enabled_ = false;
     std::vector<std::unique_ptr<RT64::RenderBuffer>> stale_buffers_{};
     moodycamel::ConcurrentQueue<ImageFromBytes> image_from_bytes_queue;
-    std::unordered_map<std::string, std::vector<char>> image_from_bytes_map;
+    std::unordered_map<std::string, ImageFromBytes> image_from_bytes_map;
 public:
     RmlRenderInterface_RT64_impl(RT64::RenderInterface* interface, RT64::RenderDevice* device) {
         interface_ = interface;
@@ -201,7 +223,19 @@ public:
 
         // Create the pipeline description
         RT64::RenderGraphicsPipelineDesc pipeline_desc{};
-        pipeline_desc.renderTargetBlend[0] = RT64::RenderBlendDesc::AlphaBlend();
+        // Set up alpha blending for non-premultiplied alpha. RmlUi recommends using premultiplied alpha normally,
+        // but that would require preprocessing all input files, which would be difficult for user-provided content (such as mods).
+        // This blending setup produces similar results as premultipled alpha but for normal assets as it multiplies during blending and
+        // computes the output alpha value the same way that a premultipled alpha blender would.
+        pipeline_desc.renderTargetBlend[0] = RT64::RenderBlendDesc {
+            .blendEnabled = true,
+            .srcBlend = RT64::RenderBlend::SRC_ALPHA,
+            .dstBlend = RT64::RenderBlend::INV_SRC_ALPHA,
+            .blendOp = RT64::RenderBlendOperation::ADD,
+            .srcBlendAlpha = RT64::RenderBlend::ONE,
+            .dstBlendAlpha = RT64::RenderBlend::INV_SRC_ALPHA,
+            .blendOpAlpha = RT64::RenderBlendOperation::ADD,
+        };
         pipeline_desc.renderTargetFormat[0] = SwapChainFormat; // TODO: Use whatever format the swap chain was created with.
         pipeline_desc.renderTargetCount = 1;
         pipeline_desc.cullMode = RT64::RenderCullMode::NONE;
@@ -236,7 +270,7 @@ public:
         }
 
         copy_command_queue_ = device->createCommandQueue(RT64::RenderCommandListType::COPY);
-        copy_command_list_ = device->createCommandList(RT64::RenderCommandListType::COPY);
+        copy_command_list_ = copy_command_queue_->createCommandList(RT64::RenderCommandListType::COPY);
         copy_command_fence_ = device->createCommandFence();
     }
 
@@ -393,11 +427,30 @@ public:
             return true;
         }
         
-        // TODO: This data copy can be avoided when RT64::TextureCache::loadTextureFromBytes's function is updated to only take a pointer and size as the input.
-        std::vector<uint8_t> data_copy(it->second.data(), it->second.data() + it->second.size());
+        RT64::Texture* texture = nullptr;
         std::unique_ptr<RT64::RenderBuffer> texture_buffer;
+        ImageFromBytes& img = it->second;
         copy_command_list_->begin();
-        RT64::Texture *texture = RT64::TextureCache::loadTextureFromBytes(device_, copy_command_list_.get(), data_copy, texture_buffer);
+
+        switch (img.type) {
+            case ImageType::RGBA32:
+                {
+                    // Read the image header (two 32-bit values for width and height respectively).
+                    uint32_t rowPitch = img.width * 4;
+                    size_t byteCount = img.height * rowPitch;
+                    texture = new RT64::Texture();
+                    RT64::TextureCache::setRGBA32(texture, device_, copy_command_list_.get(), reinterpret_cast<const uint8_t*>(img.bytes.data()), byteCount, img.width, img.height, rowPitch, texture_buffer, nullptr);
+                }
+                break;
+            case ImageType::File:
+                {
+                    // TODO: This data copy can be avoided when RT64::TextureCache::loadTextureFromBytes's function is updated to only take a pointer and size as the input.
+                    std::vector<uint8_t> data_copy(img.bytes.data(), img.bytes.data() + img.bytes.size());
+                    texture = RT64::TextureCache::loadTextureFromBytes(device_, copy_command_list_.get(), data_copy, texture_buffer);
+                }
+                break;
+        }
+        
         copy_command_list_->end();
         copy_command_queue_->executeCommandLists(copy_command_list_.get(), copy_command_fence_.get());
         copy_command_queue_->waitForCommandFence(copy_command_fence_.get());
@@ -585,6 +638,7 @@ public:
             list->setGraphicsPipelineLayout(layout_.get());
             list->setGraphicsDescriptorSet(sampler_set_.get(), 0);
             list->setGraphicsDescriptorSet(screen_descriptor_set_.get(), 1);
+            list->setScissors(RT64::RenderRect{ 0, 0, window_width_, window_height_ });
             RT64::RenderVertexBufferView vertex_view(screen_vertex_buffer_.get(), screen_vertex_buffer_size_);
             list->setVertexBuffers(0, &vertex_view, 1, &vertex_slot_);
 
@@ -604,14 +658,21 @@ public:
         list_ = nullptr;
     }
 
-    void queue_image_from_bytes(const std::string &src, const std::vector<char> &bytes) {
-        image_from_bytes_queue.enqueue(ImageFromBytes(src, bytes));
+    void queue_image_from_bytes_file(const std::string &src, const std::vector<char> &bytes) {
+        // Width and height aren't used for file images, so set them to 0.
+        image_from_bytes_queue.enqueue(ImageFromBytes{ .type = ImageType::File, .width = 0, .height = 0, .name = src, .bytes = bytes });
+    }
+
+    void queue_image_from_bytes_rgba32(const std::string &src, const std::vector<char> &bytes, uint32_t width, uint32_t height) {
+        image_from_bytes_queue.enqueue(ImageFromBytes{ .type = ImageType::RGBA32, .width = width, .height = height, .name = src, .bytes = bytes });
     }
 
     void flush_image_from_bytes_queue() {
         ImageFromBytes image_from_bytes;
         while (image_from_bytes_queue.try_dequeue(image_from_bytes)) {
-            image_from_bytes_map.emplace(image_from_bytes.first, std::move(image_from_bytes.second));
+            // We can move the name into the map since the name in the actual entry is no longer needed.
+            // After that, move the entry itself into the map.
+            image_from_bytes_map.emplace(std::move(image_from_bytes.name), std::move(image_from_bytes));
         }
     }
 };
@@ -647,8 +708,14 @@ void recompui::RmlRenderInterface_RT64::end(RT64::RenderCommandList* list, RT64:
     impl->end(list, framebuffer);
 }
 
-void recompui::RmlRenderInterface_RT64::queue_image_from_bytes(const std::string &src, const std::vector<char> &bytes) {
+void recompui::RmlRenderInterface_RT64::queue_image_from_bytes_file(const std::string &src, const std::vector<char> &bytes) {
     assert(static_cast<bool>(impl));
 
-    impl->queue_image_from_bytes(src, bytes);
+    impl->queue_image_from_bytes_file(src, bytes);
+}
+
+void recompui::RmlRenderInterface_RT64::queue_image_from_bytes_rgba32(const std::string &src, const std::vector<char> &bytes, uint32_t width, uint32_t height) {
+    assert(static_cast<bool>(impl));
+
+    impl->queue_image_from_bytes_rgba32(src, bytes, width, height);
 }

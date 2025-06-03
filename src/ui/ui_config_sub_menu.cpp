@@ -13,6 +13,9 @@ namespace recompui {
 void ConfigOptionElement::process_event(const Event &e) {
     switch (e.type) {
     case EventType::Hover:
+        if (hover_callback == nullptr) {
+            break;
+        }
         hover_callback(this, std::get<EventHover>(e.variant).active);
         break;
     case EventType::Update:
@@ -36,8 +39,8 @@ ConfigOptionElement::~ConfigOptionElement() {
 
 }
 
-void ConfigOptionElement::set_id(std::string_view id) {
-    this->id = id;
+void ConfigOptionElement::set_option_id(std::string_view id) {
+    this->option_id = id;
 }
 
 void ConfigOptionElement::set_name(std::string_view name) {
@@ -53,6 +56,10 @@ void ConfigOptionElement::set_hover_callback(std::function<void(ConfigOptionElem
     hover_callback = callback;
 }
 
+void ConfigOptionElement::set_focus_callback(std::function<void(const std::string &, bool)> callback) {
+    focus_callback = callback;
+}
+
 const std::string &ConfigOptionElement::get_description() const {
     return description;
 }
@@ -60,45 +67,56 @@ const std::string &ConfigOptionElement::get_description() const {
 // ConfigOptionSlider
 
 void ConfigOptionSlider::slider_value_changed(double v) {
-    callback(id, v);
+    callback(option_id, v);
 }
 
 ConfigOptionSlider::ConfigOptionSlider(Element *parent, double value, double min_value, double max_value, double step_value, bool percent, std::function<void(const std::string &, double)> callback) : ConfigOptionElement(parent) {
     this->callback = callback;
 
     slider = get_current_context().create_element<Slider>(this, percent ? SliderType::Percent : SliderType::Double);
+    slider->set_max_width(380.0f);
     slider->set_min_value(min_value);
     slider->set_max_value(max_value);
     slider->set_step_value(step_value);
     slider->set_value(value);
-    slider->add_value_changed_callback(std::bind(&ConfigOptionSlider::slider_value_changed, this, std::placeholders::_1));
+    slider->add_value_changed_callback([this](double v){ slider_value_changed(v); });
+    slider->set_focus_callback([this](bool active) {
+        focus_callback(option_id, active);
+    });
 }
 
 // ConfigOptionTextInput
 
 void ConfigOptionTextInput::text_changed(const std::string &text) {
-    callback(id, text);
+    callback(option_id, text);
 }
 
 ConfigOptionTextInput::ConfigOptionTextInput(Element *parent, std::string_view value, std::function<void(const std::string &, const std::string &)> callback) : ConfigOptionElement(parent) {
     this->callback = callback;
 
     text_input = get_current_context().create_element<TextInput>(this);
+    text_input->set_max_width(400.0f);
     text_input->set_text(value);
-    text_input->add_text_changed_callback(std::bind(&ConfigOptionTextInput::text_changed, this, std::placeholders::_1));
+    text_input->add_text_changed_callback([this](const std::string &text){ text_changed(text); });
+    text_input->set_focus_callback([this](bool active) {
+        focus_callback(option_id, active);
+    });
 }
 
 // ConfigOptionRadio
 
 void ConfigOptionRadio::index_changed(uint32_t index) {
-    callback(id, index);
+    callback(option_id, index);
 }
 
 ConfigOptionRadio::ConfigOptionRadio(Element *parent, uint32_t value, const std::vector<std::string> &options, std::function<void(const std::string &, uint32_t)> callback) : ConfigOptionElement(parent) {
     this->callback = callback;
 
     radio = get_current_context().create_element<Radio>(this);
-    radio->add_index_changed_callback(std::bind(&ConfigOptionRadio::index_changed, this, std::placeholders::_1));
+    radio->set_focus_callback([this](bool active) {
+        focus_callback(option_id, active);
+    });
+    radio->add_index_changed_callback([this](uint32_t index){ index_changed(index); });
     for (std::string_view option : options) {
         radio->add_option(option);
     }
@@ -117,21 +135,22 @@ void ConfigSubMenu::back_button_pressed() {
 
     recompui::hide_context(sub_menu_context);
     recompui::show_context(config_context, "");
+    recompui::focus_mod_configure_button();
 }
 
-void ConfigSubMenu::option_hovered(ConfigOptionElement *option, bool active) {
+void ConfigSubMenu::set_description_option_element(ConfigOptionElement *option, bool active) {
     if (active) {
-        hover_option_elements.emplace(option);
+        description_option_element = option;
     }
-    else {
-        hover_option_elements.erase(option);
+    else if (description_option_element == option) {
+        description_option_element = nullptr;
     }
 
-    if (hover_option_elements.empty()) {
+    if (description_option_element == nullptr) {
         description_label->set_text("");
     }
     else {
-        description_label->set_text((*hover_option_elements.begin())->get_description());
+        description_label->set_text(description_option_element->get_description());
     }
 }
 
@@ -147,12 +166,12 @@ ConfigSubMenu::ConfigSubMenu(Element *parent) : Element(parent) {
     header_container = context.create_element<Container>(this, FlexDirection::Row, JustifyContent::FlexStart);
     header_container->set_flex_grow(0.0f);
     header_container->set_align_items(AlignItems::Center);
-    header_container->set_padding_left(12.0f);
+    header_container->set_padding(12.0f);
     header_container->set_gap(24.0f);
 
     {
         back_button = context.create_element<Button>(header_container, "Back", ButtonStyle::Secondary);
-        back_button->add_pressed_callback(std::bind(&ConfigSubMenu::back_button_pressed, this));
+        back_button->add_pressed_callback([this](){ back_button_pressed(); });
         title_label = context.create_element<Label>(header_container, "Title", LabelStyle::Large);
     }
 
@@ -167,9 +186,13 @@ ConfigSubMenu::ConfigSubMenu(Element *parent) : Element(parent) {
             config_scroll_container = context.create_element<ScrollContainer>(config_container, ScrollDirection::Vertical);
         }
 
-        description_label = context.create_element<Label>(body_container, "Description", LabelStyle::Small);
+        description_label = context.create_element<Label>(body_container, "", LabelStyle::Small);
         description_label->set_min_width(800.0f);
+        description_label->set_padding_left(16.0f);
+        description_label->set_padding_right(16.0f);
     }
+
+    recompui::get_current_context().set_autofocus_element(back_button);
 }
 
 ConfigSubMenu::~ConfigSubMenu() {
@@ -183,14 +206,24 @@ void ConfigSubMenu::enter(std::string_view title) {
 void ConfigSubMenu::clear_options() {
     config_scroll_container->clear_children();
     config_option_elements.clear();
-    hover_option_elements.clear();
+    description_option_element = nullptr;
 }
 
 void ConfigSubMenu::add_option(ConfigOptionElement *option, std::string_view id, std::string_view name, std::string_view description) {
-    option->set_id(id);
+    option->set_option_id(id);
     option->set_name(name);
     option->set_description(description);
-    option->set_hover_callback(std::bind(&ConfigSubMenu::option_hovered, this, std::placeholders::_1, std::placeholders::_2));
+    option->set_hover_callback([this](ConfigOptionElement *option, bool active){ set_description_option_element(option, active); });
+    option->set_focus_callback([this, option](const std::string &id, bool active) { set_description_option_element(option, active); });
+    if (config_option_elements.empty()) {
+        back_button->set_nav(NavDirection::Down, option->get_focus_element());
+        option->set_nav(NavDirection::Up, back_button);
+    }
+    else {
+        config_option_elements.back()->set_nav(NavDirection::Down, option->get_focus_element());
+        option->set_nav(NavDirection::Up, config_option_elements.back()->get_focus_element());
+    }
+
     config_option_elements.emplace_back(option);
 }
 

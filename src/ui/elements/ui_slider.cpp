@@ -1,4 +1,6 @@
+#include "overloaded.h"
 #include "ui_slider.h"
+#include "../ui_utils.h"
 
 #include <cmath>
 #include <charconv>
@@ -23,7 +25,7 @@ namespace recompui {
         }
     }
 
-    void Slider::bar_clicked(float x, float) {
+    void Slider::bar_pressed(float x, float) {
         update_value_from_mouse(x);
     }
 
@@ -44,29 +46,104 @@ namespace recompui {
 
     void Slider::update_circle_position() {
         double ratio = std::clamp((value - min_value) / (max_value - min_value), 0.0, 1.0);
-        circle_element->set_left(slider_width_dp * ratio);
+        circle_element->set_left(ratio * 100.0, Unit::Percent);
     }
 
     void Slider::update_label_text() {
         char text_buffer[32];
-        int precision = type == SliderType::Double ? 1 : 0;
-        auto result = std::to_chars(text_buffer, text_buffer + sizeof(text_buffer) - 1, value, std::chars_format::fixed, precision);
-        if (result.ec == std::errc()) {
-            if (type == SliderType::Percent) {
-                *result.ptr = '%';
-                result.ptr++;
-            }
 
-            value_label->set_text(std::string(text_buffer, result.ptr));
+        if (type == SliderType::Double) {
+            std::snprintf(text_buffer, sizeof(text_buffer), "%.1f", value);
+        } else if (type == SliderType::Percent) {
+            std::snprintf(text_buffer, sizeof(text_buffer), "%d%%", static_cast<int>(value));
+        } else {
+            std::snprintf(text_buffer, sizeof(text_buffer), "%d", static_cast<int>(value));
+        }
+
+        value_label->set_text(text_buffer);
+    }
+    
+    void Slider::set_input_value(const ElementValue& val) {
+        std::visit(overloaded {
+            [this](uint32_t u) { set_value(u); }, 
+            [this](float f) { set_value(f); }, 
+            [this](double d) { set_value(d); },
+            [](std::monostate) {}
+        }, val);
+    }
+
+    void Slider::process_event(const Event& e) {
+        switch (e.type) {
+        case EventType::Focus:
+            {
+                bool active = std::get<EventFocus>(e.variant).active;
+                circle_element->set_style_enabled(focus_state, active);
+                if (active) {
+                    queue_update();
+                }
+                if (focus_callback != nullptr) {
+                    focus_callback(active);
+                }
+            }
+            break;
+        case EventType::Update:
+            if (is_enabled()) {
+                if (circle_element->is_style_enabled(focus_state)) {
+                    circle_element->set_background_color(recompui::get_pulse_color(750));
+                    queue_update();
+                }
+                else {
+                    circle_element->set_background_color(Color{ 204, 204, 204, 255 });
+                }
+            }
+            else {
+                circle_element->set_background_color(Color{ 102, 102, 102, 255 });
+            }
+            break;
+        case EventType::Navigate:
+            {
+                NavDirection dir = std::get<EventNavigate>(e.variant).direction;
+                if (dir == NavDirection::Left) {
+                    do_step(false);
+                }
+                else if (dir == NavDirection::Right) {
+                    do_step(true);
+                }
+            }
+            break;
+        case EventType::Enable:
+            {
+                bool enable_active = std::get<EventEnable>(e.variant).active;
+                circle_element->set_enabled(enable_active);
+                if (enable_active) {
+                    set_cursor(Cursor::Pointer);
+                    set_focusable(true);
+                    circle_element->set_background_color(Color{ 204, 204, 204, 255 });
+                }
+                else {
+                    set_cursor(Cursor::None);
+                    set_focusable(false);
+                    circle_element->set_background_color(Color{ 102, 102, 102, 255 });
+                }
+            }
+            break;
+        default:
+            break;
         }
     }
 
-    Slider::Slider(Element *parent, SliderType type) : Element(parent) {
+    Slider::Slider(Element *parent, SliderType type) : Element(parent, Events(EventType::Focus, EventType::Update, EventType::Navigate, EventType::Enable)) {
         this->type = type;
 
+        set_cursor(Cursor::Pointer);
         set_display(Display::Flex);
-        set_flex(1.0f, 1.0f, 100.0f, Unit::Percent);
         set_flex_direction(FlexDirection::Row);
+        set_text_align(TextAlign::Left);
+        set_min_width(120.0f);
+
+        enable_focus();
+        set_nav_none(NavDirection::Left);
+        set_nav_none(NavDirection::Right);
 
         ContextId context = get_current_context();
 
@@ -75,8 +152,10 @@ namespace recompui {
         value_label->set_min_width(60.0f);
         value_label->set_max_width(60.0f);
 
-        slider_element = context.create_element<Element>(this);
-        slider_element->set_width(slider_width_dp);
+        slider_element = context.create_element<Clickable>(this, true);
+        slider_element->set_flex(1.0f, 0.0f);
+        slider_element->add_pressed_callback([this](float x, float y){ bar_pressed(x, y); focus(); });
+        slider_element->add_dragged_callback([this](float x, float y, recompui::DragPhase phase){ bar_dragged(x, y, phase); focus(); });
 
         {
             bar_element = context.create_element<Clickable>(slider_element, true);
@@ -84,19 +163,20 @@ namespace recompui {
             bar_element->set_height(2.0f);
             bar_element->set_margin_top(8.0f);
             bar_element->set_background_color(Color{ 255, 255, 255, 50 });
-            bar_element->add_pressed_callback(std::bind(&Slider::bar_clicked, this, std::placeholders::_1, std::placeholders::_2));
-            bar_element->add_dragged_callback(std::bind(&Slider::bar_dragged, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+            bar_element->add_pressed_callback([this](float x, float y){ bar_pressed(x, y); focus(); });
+            bar_element->add_dragged_callback([this](float x, float y, recompui::DragPhase phase){ bar_dragged(x, y, phase); focus(); });
             
-            circle_element = context.create_element<Clickable>(slider_element, true);
+            circle_element = context.create_element<Clickable>(bar_element, true);
             circle_element->set_position(Position::Relative);
             circle_element->set_width(16.0f);
             circle_element->set_height(16.0f);
-            circle_element->set_margin_top(-8.0f);
+            circle_element->set_margin_top(-7.0f);
             circle_element->set_margin_right(-8.0f);
             circle_element->set_margin_left(-8.0f);
             circle_element->set_background_color(Color{ 204, 204, 204, 255 });
             circle_element->set_border_radius(8.0f);
-            circle_element->add_dragged_callback(std::bind(&Slider::circle_dragged, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+            circle_element->add_pressed_callback([this](float, float){ focus(); });
+            circle_element->add_dragged_callback([this](float x, float y, recompui::DragPhase phase){ circle_dragged(x, y, phase); focus(); });
             circle_element->set_cursor(Cursor::Pointer);
         }
 
@@ -140,6 +220,24 @@ namespace recompui {
 
     void Slider::add_value_changed_callback(std::function<void(double)> callback) {
         value_changed_callbacks.emplace_back(callback);
+    }
+
+    void Slider::set_focus_callback(std::function<void(bool)> callback) {
+        focus_callback = callback;
+    }
+
+    void Slider::do_step(bool increment) {
+        double new_value = value;
+        if (increment) {
+            new_value += step_value;
+        }
+        else {
+            new_value -= step_value;
+        }
+        new_value = std::clamp(new_value, min_value, max_value);
+        if (new_value != value) {
+            set_value_internal(new_value, false, true);
+        }
     }
 
 } // namespace recompui

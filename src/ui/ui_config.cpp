@@ -4,6 +4,7 @@
 #include "banjo_config.h"
 #include "banjo_debug.h"
 #include "banjo_render.h"
+#include "banjo_support.h"
 #include "promptfont.h"
 #include "ultramodern/config.hpp"
 #include "ultramodern/ultramodern.hpp"
@@ -20,6 +21,26 @@ Rml::DataModelHandle sound_options_model_handle;
 
 // True if controller config menu is open, false if keyboard config menu is open, undefined otherwise
 bool configuring_controller = false;
+
+int recompui::config_tab_to_index(recompui::ConfigTab tab) {
+    switch (tab) {
+    case recompui::ConfigTab::General:
+        return 0;
+    case recompui::ConfigTab::Controls:
+        return 1;
+    case recompui::ConfigTab::Graphics:
+        return 2;
+    case recompui::ConfigTab::Sound:
+        return 3;
+    case recompui::ConfigTab::Mods:
+        return 4;
+    case recompui::ConfigTab::Debug:
+        return 5;
+    default:
+        assert(false && "Unknown config tab.");
+        return 0;
+    }
+}
 
 template <typename T>
 void get_option(const T& input, Rml::Variant& output) {
@@ -164,7 +185,7 @@ void apply_graphics_config(void) {
 
 void close_config_menu() {
     if (ultramodern::renderer::get_graphics_config() != new_options) {
-        recompui::open_prompt(
+        recompui::open_choice_prompt(
             "Graphics options have changed",
             "Would you like to apply or discard the changes?",
             "Apply",
@@ -191,7 +212,7 @@ void close_config_menu() {
 }
 
 void banjo::open_quit_game_prompt() {
-    recompui::open_prompt(
+    recompui::open_choice_prompt(
         "Are you sure you want to quit?",
         "Any progress since your last save will be lost.",
         "Quit",
@@ -376,7 +397,45 @@ recompui::ContextId recompui::get_config_context_id() {
 	return config_context;
 }
 
+// Helper copied from RmlUi to get a named child.
+Rml::Element* recompui::get_child_by_tag(Rml::Element* parent, const std::string& tag)
+{
+	// Look for the existing child
+	for (int i = 0; i < parent->GetNumChildren(); i++)
+	{
+        Rml::Element* child = parent->GetChild(i);
+		if (child->GetTagName() == tag)
+			return child;
+	}
+
+    return nullptr;
+}
+
+class ConfigTabsetListener : public Rml::EventListener {
+    void ProcessEvent(Rml::Event& event) override {
+        if (event.GetId() == Rml::EventId::Tabchange) {
+            int tab_index = event.GetParameter<int>("tab_index", 0);
+            bool in_mod_tab = (tab_index == recompui::config_tab_to_index(recompui::ConfigTab::Mods));
+            if (in_mod_tab) {
+                recompui::set_config_tabset_mod_nav();
+            }
+            else {
+                Rml::ElementTabSet* tabset = recompui::get_config_tabset();
+                Rml::Element* tabs = recompui::get_child_by_tag(tabset, "tabs");
+                if (tabs != nullptr) {
+                    size_t num_children = tabs->GetNumChildren();
+                    for (size_t i = 0; i < num_children; i++) {
+                        tabs->GetChild(i)->SetProperty(Rml::PropertyId::NavDown, Rml::Style::Nav::Auto);
+                    }
+                }
+            }
+        }
+    }
+};
+
 class ConfigMenu : public recompui::MenuController {
+private:
+    ConfigTabsetListener config_tabset_listener;
 public:
     ConfigMenu() {
 
@@ -384,11 +443,10 @@ public:
     ~ConfigMenu() override {
 
     }
-    Rml::ElementDocument* load_document(Rml::Context* context) override {
-        (void)context;
-		config_context = recompui::create_context("assets/config_menu.rml");
-        Rml::ElementDocument* ret = config_context.get_document();
-		return ret;
+    void load_document() override {
+		config_context = recompui::create_context(banjo::get_asset_path("config_menu.rml"));
+        recompui::update_mod_list(false);
+        recompui::get_config_tabset()->AddEventListener(Rml::EventId::Tabchange, &config_tabset_listener);
     }
     void register_events(recompui::UiEventListenerInstancer& listener) override {
         recompui::register_event(listener, "apply_options",
@@ -563,7 +621,7 @@ public:
             throw std::runtime_error("Failed to make RmlUi data model for the controls config menu");
         }
 
-        constructor.BindFunc("input_count", [](Rml::Variant& out) { out = recomp::get_num_inputs(); } );
+        constructor.BindFunc("input_count", [](Rml::Variant& out) { out = static_cast<uint64_t>(recomp::get_num_inputs()); } );
         constructor.BindFunc("input_device_is_keyboard", [](Rml::Variant& out) { out = cur_device == recomp::InputDevice::Keyboard; } );
 
         constructor.RegisterTransformFunc("get_input_name", [](const Rml::VariantList& inputs) {
@@ -851,64 +909,45 @@ void recompui::toggle_fullscreen() {
     graphics_model_handle.DirtyVariable("wm_option");
 }
 
-void recompui::open_prompt(
-	const std::string& headerText,
-	const std::string& contentText,
-	const std::string& confirmLabelText,
-	const std::string& cancelLabelText,
-	std::function<void()> confirmCb,
-	std::function<void()> cancelCb,
-	ButtonVariant _confirmVariant,
-	ButtonVariant _cancelVariant,
-	bool _focusOnCancel,
-	const std::string& _returnElementId
-) {
-	printf("Prompt opened\n    %s (%s): %s %s\n", contentText.c_str(), headerText.c_str(), confirmLabelText.c_str(), cancelLabelText.c_str());
-	printf("    Autoselected %s\n", confirmLabelText.c_str());
-	confirmCb();
-}
-
-bool recompui::is_prompt_open() {
-	return false;
-}
-
 void recompui::set_config_tab(ConfigTab tab) {
+    get_config_tabset()->SetActiveTab(config_tab_to_index(tab));
+}
+
+Rml::ElementTabSet* recompui::get_config_tabset() {
     ContextId config_context = recompui::get_config_context_id();
-    
+
+    ContextId old_context = recompui::try_close_current_context();
+
+    Rml::ElementDocument *doc = config_context.get_document();
+    assert(doc != nullptr);
+
+    Rml::Element *tabset_el = doc->GetElementById("config_tabset");
+    assert(tabset_el != nullptr);
+
+    Rml::ElementTabSet *tabset = rmlui_dynamic_cast<Rml::ElementTabSet *>(tabset_el);
+    assert(tabset != nullptr);
+
+    if (old_context != ContextId::null()) {
+        old_context.open();
+    }
+
+    return tabset;
+}
+
+Rml::Element* recompui::get_mod_tab() {
+    ContextId config_context = recompui::get_config_context_id();
+
+    ContextId old_context = recompui::try_close_current_context();
+
     Rml::ElementDocument* doc = config_context.get_document();
     assert(doc != nullptr);
 
-    Rml::Element* tabset_el = doc->GetElementById("config_tabset");
-    assert(tabset_el != nullptr);
+    Rml::Element* tab_el = doc->GetElementById("tab_mods");
+    assert(tab_el != nullptr);
 
-    Rml::ElementTabSet* tabset = rmlui_dynamic_cast<Rml::ElementTabSet*>(tabset_el);
-    assert(tabset != nullptr);
-
-    int tab_index = 0;
-
-    switch (tab) {
-        case ConfigTab::General:
-            tab_index = 0;
-            break;
-        case ConfigTab::Controls:
-            tab_index = 1;
-            break;
-        case ConfigTab::Graphics:
-            tab_index = 2;
-            break;
-        case ConfigTab::Sound:
-            tab_index = 3;
-            break;
-        case ConfigTab::Mods:
-            tab_index = 4;
-            break;
-        case ConfigTab::Debug:
-            tab_index = 5;
-            break;
-        default:
-            assert(false);
-            return;
+    if (old_context != ContextId::null()) {
+        old_context.open();
     }
 
-    tabset->SetActiveTab(tab_index);
+    return tab_el;
 }

@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(BanjoRecompiled)
+
+if (APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum OS X deployment version")
+endif()
+
+project(BanjoRecompiled LANGUAGES C CXX)
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,6 +19,14 @@ endif()
 # Opt out of constexpr mutex constructor on windows to prevent vcredist issues
 if (WIN32)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR")
+endif()
+
+if (APPLE)
+    enable_language(OBJC OBJCXX)
+endif()
+
+if (CMAKE_SYSTEM_NAME MATCHES "Linux")
+    option(RECOMP_FLATPAK "Configure the build for Flatpak compatibility." OFF)
 endif()
 
 # Avoid warning about DOWNLOAD_EXTRACT_TIMESTAMP in CMake 3.24:
@@ -32,6 +45,10 @@ set(RT64_STATIC TRUE)
 set(RT64_SDL_WINDOW_VULKAN TRUE)
 add_compile_definitions(HLSL_CPU)
 
+if (RECOMP_FLATPAK)
+    add_compile_definitions(RECOMP_FLATPAK)
+endif()
+
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/rt64 ${CMAKE_BINARY_DIR}/rt64)
 
 # set(BUILD_SHARED_LIBS_SAVED "${BUILD_SHARED_LIBS}")
@@ -42,6 +59,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/lib/lunasvg)
 SET(RMLUI_SVG_PLUGIN ON CACHE BOOL "" FORCE)
 SET(RMLUI_TESTS_ENABLED OFF CACHE BOOL "" FORCE)
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/RmlUi)
+target_compile_definitions(rmlui_core PRIVATE LUNASVG_BUILD_STATIC)
 
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime)
 
@@ -110,7 +128,7 @@ add_custom_target(PatchesBin
 
 # Generate patches_bin.c from patches.bin
 add_custom_command(OUTPUT ${CMAKE_SOURCE_DIR}/RecompiledPatches/patches_bin.c
-    COMMAND file_to_c ${CMAKE_SOURCE_DIR}/patches/patches.bin bk_patches_bin ${CMAKE_SOURCE_DIR}/RecompiledPatches/patches_bin.c ${CMAKE_SOURCE_DIR}/RecompiledPatches/patches_bin.h 
+    COMMAND file_to_c ${CMAKE_SOURCE_DIR}/patches/patches.bin bk_patches_bin ${CMAKE_SOURCE_DIR}/RecompiledPatches/patches_bin.c ${CMAKE_SOURCE_DIR}/RecompiledPatches/patches_bin.h
     DEPENDS ${CMAKE_SOURCE_DIR}/patches/patches.bin
 )
 
@@ -126,22 +144,12 @@ add_custom_command(OUTPUT
                    DEPENDS ${CMAKE_SOURCE_DIR}/patches/patches.elf
 )
 
-# Download controller db file for controller support via SDL2
-set(GAMECONTROLLERDB_COMMIT "b1e4090b3d4266e55feb0793efa35792e05faf66")
-set(GAMECONTROLLERDB_URL "https://raw.githubusercontent.com/gabomdq/SDL_GameControllerDB/${GAMECONTROLLERDB_COMMIT}/gamecontrollerdb.txt")
-
-file(DOWNLOAD ${GAMECONTROLLERDB_URL} ${CMAKE_SOURCE_DIR}/gamecontrollerdb.txt
-     TLS_VERIFY ON)
-
-add_custom_target(DownloadGameControllerDB
-    DEPENDS ${CMAKE_SOURCE_DIR}/gamecontrollerdb.txt)
-
 # Main executable
 add_executable(BanjoRecompiled)
-add_dependencies(BanjoRecompiled DownloadGameControllerDB)
 
 set (SOURCES
     ${CMAKE_SOURCE_DIR}/src/main/main.cpp
+    ${CMAKE_SOURCE_DIR}/src/main/support.cpp
     ${CMAKE_SOURCE_DIR}/src/main/register_overlays.cpp
     ${CMAKE_SOURCE_DIR}/src/main/register_patches.cpp
     ${CMAKE_SOURCE_DIR}/src/main/rt64_render_context.cpp
@@ -151,20 +159,26 @@ set (SOURCES
     ${CMAKE_SOURCE_DIR}/src/game/config.cpp
     ${CMAKE_SOURCE_DIR}/src/game/debug.cpp
     ${CMAKE_SOURCE_DIR}/src/game/recomp_api.cpp
-    ${CMAKE_SOURCE_DIR}/src/game/recomp_mem_api.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/recomp_actor_api.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/recomp_data_api.cpp
     ${CMAKE_SOURCE_DIR}/src/game/rom_decompression.cpp
 
     ${CMAKE_SOURCE_DIR}/src/ui/ui_renderer.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/ui_state.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/ui_launcher.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/ui_config.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/ui_prompt.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/ui_config_sub_menu.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/ui_color_hack.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/ui_rml_hacks.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/ui_elements.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/ui_mod_details_panel.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/ui_mod_installer.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/ui_mod_menu.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/ui_api.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/ui_api_events.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/ui_api_images.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/ui_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/util/hsv.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/core/ui_context.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/elements/ui_button.cpp
@@ -176,6 +190,7 @@ set (SOURCES
     ${CMAKE_SOURCE_DIR}/src/ui/elements/ui_radio.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/elements/ui_scroll_container.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/elements/ui_slider.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/elements/ui_span.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/elements/ui_style.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/elements/ui_text_input.cpp
     ${CMAKE_SOURCE_DIR}/src/ui/elements/ui_toggle.cpp
@@ -184,6 +199,10 @@ set (SOURCES
 
     ${CMAKE_SOURCE_DIR}/lib/RmlUi/Backends/RmlUi_Platform_SDL.cpp
 )
+
+if (APPLE)
+    list(APPEND SOURCES ${CMAKE_SOURCE_DIR}/src/main/support_apple.mm)
+endif()
 
 target_include_directories(BanjoRecompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/include
@@ -221,6 +240,12 @@ endif()
 if (MSVC)
     # Disable identical code folding, since this breaks mod function patching as multiple functions can get merged into one.
     target_link_options(BanjoRecompiled PRIVATE /OPT:NOICF)
+elseif (APPLE)
+    # Use a wrapper around ld64 that respects segprot's `max_prot` value in order
+    # to make our executable memory writable (required for mod function patching)
+    target_link_options(BanjoRecompiled PRIVATE
+        "-fuse-ld=${CMAKE_SOURCE_DIR}/.github/macos/ld64"
+    )
 endif()
 
 if (WIN32)
@@ -263,6 +288,20 @@ if (WIN32)
     )
 
     # target_sources(BanjoRecompiled PRIVATE ${CMAKE_SOURCE_DIR}/icons/app.rc)
+    target_link_libraries(BanjoRecompiled PRIVATE SDL2)
+endif()
+
+if (APPLE)
+    find_package(SDL2 REQUIRED)
+    target_include_directories(BanjoRecompiled PRIVATE ${SDL2_INCLUDE_DIRS})
+
+    set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
+    set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+    find_package(Threads REQUIRED)
+
+    target_link_libraries(BanjoRecompiled PRIVATE ${CMAKE_DL_LIBS} Threads::Threads SDL2::SDL2)
+
+    include(${CMAKE_SOURCE_DIR}/.github/macos/apple_bundle.cmake)
 endif()
 
 if (CMAKE_SYSTEM_NAME MATCHES "Linux")
@@ -273,7 +312,7 @@ if (CMAKE_SYSTEM_NAME MATCHES "Linux")
 
     # Generate icon_bytes.c from the app icon PNG.
     add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/icon_bytes.c ${CMAKE_CURRENT_BINARY_DIR}/icon_bytes.h
-        COMMAND file_to_c ${CMAKE_SOURCE_DIR}/icons/512.png icon_bytes ${CMAKE_CURRENT_BINARY_DIR}/icon_bytes.c ${CMAKE_CURRENT_BINARY_DIR}/icon_bytes.h 
+        COMMAND file_to_c ${CMAKE_SOURCE_DIR}/icons/512.png icon_bytes ${CMAKE_CURRENT_BINARY_DIR}/icon_bytes.c ${CMAKE_CURRENT_BINARY_DIR}/icon_bytes.h
         DEPENDS ${CMAKE_SOURCE_DIR}/icons/512.png
     )
     target_sources(BanjoRecompiled PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/icon_bytes.c)
@@ -298,7 +337,7 @@ if (CMAKE_SYSTEM_NAME MATCHES "Linux")
     message(STATUS "FREETYPE_LIBRARIES = ${FREETYPE_LIBRARIES}")
 
     include_directories(${FREETYPE_LIBRARIES})
-    target_link_libraries(BanjoRecompiled PRIVATE ${FREETYPE_LIBRARIES})
+    target_link_libraries(BanjoRecompiled PRIVATE ${FREETYPE_LIBRARIES} SDL2::SDL2)
 
     set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
     set(THREADS_PREFER_PTHREAD_FLAG TRUE)
@@ -310,7 +349,6 @@ endif()
 target_link_libraries(BanjoRecompiled PRIVATE
     PatchesLib
     RecompiledFuncs
-    SDL2
     librecomp
     ultramodern
     rt64
@@ -338,9 +376,14 @@ else()
     if (APPLE)
         # Apple's binary is universal, so it'll work on both x86_64 and arm64
         set (DXC "DYLD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/arm64" "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/arm64/dxc-macos")
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+            set(SPIRVCROSS "DYLD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/spirv-cross/lib/x64" "${PROJECT_SOURCE_DIR}/lib/rt64//src/contrib/spirv-cross/bin/x64/spirv-cross")
+        else()
+            set(SPIRVCROSS "DYLD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/spirv-cross/lib/arm64" "${PROJECT_SOURCE_DIR}/lib/rt64//src/contrib/spirv-cross/bin/x64/spirv-cross")
+        endif()
     else()
         if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
-            set (DXC "LD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/x64" "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxc")
+            set (DXC "LD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/x64" "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxc-linux")
         else()
             set (DXC "LD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/arm64" "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/arm64/dxc-linux")
         endif()
@@ -349,6 +392,27 @@ endif()
 
 build_vertex_shader(BanjoRecompiled "shaders/InterfaceVS.hlsl" "shaders/InterfaceVS.hlsl")
 build_pixel_shader(BanjoRecompiled "shaders/InterfacePS.hlsl" "shaders/InterfacePS.hlsl")
+
+# Embed all .nrm files in the "mods" directory
+file(GLOB NRM_FILES "${CMAKE_SOURCE_DIR}/mods/*.nrm")
+
+set(GENERATED_NRM_SOURCES "")
+
+foreach(NRM_FILE ${NRM_FILES})
+    get_filename_component(NRM_NAME ${NRM_FILE} NAME_WE)
+    set(OUT_C "${CMAKE_CURRENT_BINARY_DIR}/mods/${NRM_NAME}.c")
+    set(OUT_H "${CMAKE_CURRENT_BINARY_DIR}/mods/${NRM_NAME}.h")
+
+    add_custom_command(
+        OUTPUT ${OUT_C} ${OUT_H}
+        COMMAND file_to_c ${NRM_FILE} ${NRM_NAME} ${OUT_C} ${OUT_H}
+        DEPENDS ${NRM_FILE}
+    )
+
+    list(APPEND GENERATED_NRM_SOURCES ${OUT_C})
+endforeach()
+
+target_sources(BanjoRecompiled PRIVATE ${GENERATED_NRM_SOURCES})
 
 target_sources(BanjoRecompiled PRIVATE ${SOURCES})
 

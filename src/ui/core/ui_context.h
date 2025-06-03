@@ -31,6 +31,7 @@ namespace recompui {
 
         void add_loose_element(Element* element);
         void queue_element_update(ResourceId element);
+        void queue_set_text(Element* element, std::string&& text);
 
         Style* create_style();
 
@@ -40,15 +41,21 @@ namespace recompui {
 
         Rml::ElementDocument* get_document();
         Element* get_root_element();
+        Element* get_autofocus_element();
+        void set_autofocus_element(Element* element);
 
         void open();
+        bool open_if_not_already();
         void close();
         void process_updates();
 
         static constexpr ContextId null() { return ContextId{ .slot_id = uint32_t(-1) }; }
 
-        // TODO
-        bool takes_input() { return true; }
+        bool captures_input();
+        bool captures_mouse();
+
+        void set_captures_input(bool captures_input);
+        void set_captures_mouse(bool captures_input);
     };
 
     ContextId create_context(const std::filesystem::path& path);

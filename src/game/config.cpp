@@ -2,6 +2,7 @@
 #include "recomp_input.h"
 #include "banjo_sound.h"
 #include "banjo_render.h"
+#include "banjo_support.h"
 #include "ultramodern/config.hpp"
 #include "librecomp/files.hpp"
 #include <filesystem>
@@ -13,6 +14,8 @@
 #elif defined(__linux__)
 #include <unistd.h>
 #include <pwd.h>
+#elif defined(__APPLE__)
+#include "apple/rt64_apple.h"
 #endif
 
 constexpr std::u8string_view general_filename = u8"general.json";
@@ -71,7 +74,7 @@ T from_or_default(const json& j, const std::string& key, T default_value) {
     else {
         ret = default_value;
     }
-    
+
     return ret;
 }
 
@@ -129,10 +132,18 @@ namespace recomp {
 }
 
 std::filesystem::path banjo::get_app_folder_path() {
-   // directly check for portable.txt (windows and native linux binary)    
+   // directly check for portable.txt (windows and native linux binary)
    if (std::filesystem::exists("portable.txt")) {
        return std::filesystem::current_path();
    }
+
+#if defined(__APPLE__)
+   // Check for portable file in the directory containing the app bundle.
+   const auto app_bundle_path = banjo::get_bundle_directory().parent_path();
+   if (std::filesystem::exists(app_bundle_path / "portable.txt")) {
+       return app_bundle_path;
+   }
+#endif
 
    std::filesystem::path recomp_dir{};
 
@@ -145,16 +156,27 @@ std::filesystem::path banjo::get_app_folder_path() {
    }
 
    CoTaskMemFree(known_path);
-#elif defined(__linux__)
-   // check for APP_FOLDER_PATH env var used by AppImage
+#elif defined(__linux__) || defined(__APPLE__)
+   // check for APP_FOLDER_PATH env var
    if (getenv("APP_FOLDER_PATH") != nullptr) {
        return std::filesystem::path{getenv("APP_FOLDER_PATH")};
    }
 
+#if defined(__APPLE__)
+   const auto supportdir = banjo::get_application_support_directory();
+   if (supportdir) {
+       return *supportdir / banjo::program_id;
+   }
+#endif
+
    const char *homedir;
 
    if ((homedir = getenv("HOME")) == nullptr) {
+    #if defined(__linux__)
        homedir = getpwuid(getuid())->pw_dir;
+    #elif defined(__APPLE__)
+        homedir = GetHomeDirectory();
+    #endif
    }
 
    if (homedir != nullptr) {
@@ -206,7 +228,7 @@ bool save_json_with_backups(const std::filesystem::path& path, const nlohmann::j
     return recomp::finalize_output_file_with_backup(path);
 }
 
-bool save_general_config(const std::filesystem::path& path) {    
+bool save_general_config(const std::filesystem::path& path) {
     nlohmann::json config_json{};
 
     recomp::to_json(config_json["background_input_mode"], recomp::get_background_input_mode());
@@ -218,7 +240,7 @@ bool save_general_config(const std::filesystem::path& path) {
     config_json["analog_cam_mode"] = banjo::get_analog_cam_mode();
     config_json["analog_camera_invert_mode"] = banjo::get_analog_camera_invert_mode();
     config_json["debug_mode"] = banjo::get_debug_mode_enabled();
-    
+
     return save_json_with_backups(path, config_json);
 }
 
@@ -433,7 +455,7 @@ bool save_sound_config(const std::filesystem::path& path) {
 
     config_json["main_volume"] = banjo::get_main_volume();
     config_json["bgm_volume"] = banjo::get_bgm_volume();
-    
+
     return save_json_with_backups(path, config_json);
 }
 
@@ -494,7 +516,7 @@ void banjo::save_config() {
     }
 
     std::filesystem::create_directories(recomp_dir);
-    
+
     // TODO error handling for failing to save config files.
 
     save_general_config(recomp_dir / general_filename);

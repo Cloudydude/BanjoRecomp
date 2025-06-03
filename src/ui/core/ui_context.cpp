@@ -1,8 +1,10 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <fstream>
 
 #include "slot_map.h"
+#include "RmlUi/Core/StreamMemory.h"
 
 #include "ultramodern/error_handling.hpp"
 #include "recomp_ui.h"
@@ -32,8 +34,12 @@ namespace recompui {
         resource_slotmap resources;
         Rml::ElementDocument* document;
         Element root_element;
+        Element* autofocus_element = nullptr;
         std::vector<Element*> loose_elements;
         std::unordered_set<ResourceId> to_update;
+        std::vector<std::tuple<Element*, ResourceId, std::string>> to_set_text;     
+        bool captures_input = true;
+        bool captures_mouse = true;
         Context(Rml::ElementDocument* document) : document(document), root_element(document) {}
     };
 } // namespace recompui
@@ -41,10 +47,11 @@ namespace recompui {
 using context_slotmap = dod::slot_map32<recompui::Context>;
 
 static struct {
-    std::mutex all_contexts_lock;
+    std::recursive_mutex all_contexts_lock;
     context_slotmap all_contexts;
     std::unordered_set<recompui::ContextId> opened_contexts;
     std::unordered_map<Rml::ElementDocument*, recompui::ContextId> documents_to_contexts;
+    Rml::SharedPtr<Rml::StyleSheetContainer> style_sheet;
 } context_state;
 
 thread_local recompui::Context* opened_context = nullptr;
@@ -61,12 +68,16 @@ enum class ContextErrorType {
     AddResourceToWrongContext,
     UpdateElementWithoutContext,
     UpdateElementInWrongContext,
+    SetTextElementWithoutContext,
+    SetTextElementInWrongContext,
     GetResourceWithoutOpen,
     GetResourceFailed,
     DestroyResourceWithoutOpen,
     DestroyResourceInWrongContext,
     DestroyResourceNotFound,
     GetDocumentInvalidContext,
+    GetAutofocusInvalidContext,
+    SetAutofocusInvalidContext,
     InternalError,
 };
 
@@ -111,6 +122,12 @@ void context_error(recompui::ContextId id, ContextErrorType type) {
         case ContextErrorType::UpdateElementInWrongContext:
             error_message = "Attempted to update a UI element in a different UI context than the one that's open";
             break;
+        case ContextErrorType::SetTextElementWithoutContext:
+            error_message = "Attempted to set the text of a UI element with no open UI context";
+            break;
+        case ContextErrorType::SetTextElementInWrongContext:
+            error_message = "Attempted to set the text of a UI element in a different UI context than the one that's open";
+            break;
         case ContextErrorType::GetResourceWithoutOpen:
             error_message = "Attempted to get a UI resource with no open UI context";
             break;
@@ -128,6 +145,12 @@ void context_error(recompui::ContextId id, ContextErrorType type) {
             break;
         case ContextErrorType::GetDocumentInvalidContext:
             error_message = "Attempted to get the document of an invalid UI context";
+            break;
+        case ContextErrorType::GetAutofocusInvalidContext:
+            error_message = "Attempted to get the autofocus element of an invalid UI context";
+            break;
+        case ContextErrorType::SetAutofocusInvalidContext:
+            error_message = "Attempted to set the autofocus element of an invalid UI context";
             break;
         case ContextErrorType::InternalError:
             error_message = "Internal error in UI context";
@@ -166,6 +189,21 @@ recompui::ContextId create_context_impl(Rml::ElementDocument* document) {
     return ret;
 }
 
+void recompui::init_styling(const std::filesystem::path& rcss_file) {
+    std::string style{};
+    {
+        std::ifstream style_stream{rcss_file};
+        style_stream.seekg(0, std::ios::end);
+        style.resize(style_stream.tellg());
+        style_stream.seekg(0, std::ios::beg);
+
+        style_stream.read(style.data(), style.size());
+    }
+    std::unique_ptr<Rml::StreamMemory> rml_stream = std::make_unique<Rml::StreamMemory>(reinterpret_cast<Rml::byte*>(style.data()), style.size());
+    rml_stream->SetSourceURL(rcss_file.filename().string());
+    context_state.style_sheet = Rml::Factory::InstanceStyleSheetStream(rml_stream.get());
+}
+
 recompui::ContextId recompui::create_context(const std::filesystem::path& path) {
     ContextId new_context = create_context_impl(nullptr);
 
@@ -193,28 +231,19 @@ recompui::ContextId recompui::create_context(Rml::ElementDocument* document) {
 
 recompui::ContextId recompui::create_context() {
     Rml::ElementDocument* doc = create_empty_document();
+    doc->SetStyleSheetContainer(context_state.style_sheet);
     ContextId ret = create_context_impl(doc);
     Element* root = ret.get_root_element();
     // Mark the root element as not being a shim, as that's only needed for elements that were parented to Rml ones manually.
     root->shim = false;
 
-    // TODO move these defaults elsewhere. Copied from the existing rcss.
     ret.open();
     root->set_width(100.0f, Unit::Percent);
     root->set_height(100.0f, Unit::Percent);
     root->set_display(Display::Flex);
-    root->set_opacity(1.0f);
-    root->set_font_family("LatoLatin");
-    root->set_font_style(FontStyle::Normal);
-    root->set_font_weight(400);
-
-    float sz = 16.0f;
-    float spacing = 0.0f;
-    float sz_add = sz + 4;
-    root->set_font_size(sz_add, Unit::Dp);
-    root->set_letter_spacing(sz_add * spacing, Unit::Dp);
-    root->set_line_height(sz_add, Unit::Dp);
     ret.close();
+
+    doc->Hide();
 
     return ret;
 }
@@ -307,6 +336,15 @@ void recompui::ContextId::open() {
     opened_context_id = *this;
 }
 
+bool recompui::ContextId::open_if_not_already() {
+    if (opened_context_id == *this) {
+        return false;
+    }
+
+    open();
+    return true;
+}
+
 void recompui::ContextId::close() {
     // Ensure a context is currently opened by this thread.
     if (opened_context_id == ContextId::null()) {
@@ -328,6 +366,15 @@ void recompui::ContextId::close() {
         std::lock_guard lock{ context_state.all_contexts_lock };
         context_state.opened_contexts.erase(*this);
     }
+}
+
+recompui::ContextId recompui::try_close_current_context() {
+    if (opened_context_id != ContextId::null()) {
+        ContextId prev_context = opened_context_id;
+        opened_context_id.close();
+        return prev_context;
+    }
+    return ContextId::null();
 }
 
 void recompui::ContextId::process_updates() {
@@ -367,8 +414,83 @@ void recompui::ContextId::process_updates() {
             continue;
         }
 
-        static_cast<Element*>(cur_resource->get())->process_event(update_event);
+        static_cast<Element*>(cur_resource->get())->handle_event(update_event);
     }
+
+    std::vector<std::tuple<Element*, ResourceId, std::string>> to_set_text = std::move(opened_context->to_set_text);
+
+    // Delete the Rml elements that are pending deletion.
+    for (auto cur_text_update : to_set_text) {
+        Element* element_ptr = std::get<0>(cur_text_update);
+        ResourceId resource = std::get<1>(cur_text_update);
+        std::string& text = std::get<2>(cur_text_update);
+
+        // If the resource ID is valid, prefer that as we can quickly validate if the resource still exists.
+        if (resource != ResourceId::null()) {
+            resource_slotmap::key cur_key{ resource.slot_id };
+            std::unique_ptr<Style>* cur_resource = opened_context->resources.get(cur_key);
+
+            // Make sure the resource exists before setting its text, as it may have been deleted.
+            if (cur_resource == nullptr) {
+                continue;
+            }
+
+            // Perform the text update.
+            static_cast<Element*>(cur_resource->get())->base->SetInnerRML(text);
+        }
+        // Otherwise we use the element pointer, but we need to validate that it still exists before doing so.
+        else {
+            // Scan the current resources to find the target element.
+            for (const std::unique_ptr<Style>& cur_e : opened_context->resources) {
+                if (cur_e.get() == element_ptr) {
+                    element_ptr->base->SetInnerRML(text);
+                    // We can stop after finding the element.
+                    break;
+                }
+            }
+        }
+    }
+}
+
+bool recompui::ContextId::captures_input() {
+    std::lock_guard lock{ context_state.all_contexts_lock };
+
+    Context* ctx = context_state.all_contexts.get(context_slotmap::key{ slot_id });
+    if (ctx == nullptr) {
+        return false;
+    }
+    return ctx->captures_input;
+
+}
+
+bool recompui::ContextId::captures_mouse() {
+    std::lock_guard lock{ context_state.all_contexts_lock };
+
+    Context* ctx = context_state.all_contexts.get(context_slotmap::key{ slot_id });
+    if (ctx == nullptr) {
+        return false;
+    }
+    return ctx->captures_mouse;
+}
+
+void recompui::ContextId::set_captures_input(bool captures_input) {
+    std::lock_guard lock{ context_state.all_contexts_lock };
+
+    Context* ctx = context_state.all_contexts.get(context_slotmap::key{ slot_id });
+    if (ctx == nullptr) {
+        return;
+    }
+    ctx->captures_input = captures_input;
+}
+
+void recompui::ContextId::set_captures_mouse(bool captures_mouse) {
+    std::lock_guard lock{ context_state.all_contexts_lock };
+
+    Context* ctx = context_state.all_contexts.get(context_slotmap::key{ slot_id });
+    if (ctx == nullptr) {
+        return;
+    }
+    ctx->captures_mouse = captures_mouse;
 }
 
 recompui::Style* recompui::ContextId::add_resource_impl(std::unique_ptr<Style>&& resource) {
@@ -387,6 +509,8 @@ recompui::Style* recompui::ContextId::add_resource_impl(std::unique_ptr<Style>&&
     auto key = opened_context->resources.emplace(std::move(resource));
 
     if (is_element) {
+        Element* element_ptr = static_cast<Element*>(resource_ptr);
+        element_ptr->set_id(std::string{element_ptr->get_type_name()} + "-" + std::to_string(key.raw));
         key.set_tag(static_cast<uint8_t>(SlotTag::Element));
         // Send one update to the element.
         opened_context->to_update.emplace(ResourceId{ key.raw });
@@ -431,6 +555,20 @@ void recompui::ContextId::queue_element_update(ResourceId element) {
     }
 
     opened_context->to_update.emplace(element);
+}
+
+void recompui::ContextId::queue_set_text(Element* element, std::string&& text) {
+    // Ensure a context is currently opened by this thread.
+    if (opened_context_id == ContextId::null()) {
+        context_error(*this, ContextErrorType::SetTextElementWithoutContext);
+    }
+
+    // Check that the context that was specified is the same one that's currently open.
+    if (*this != opened_context_id) {
+        context_error(*this, ContextErrorType::SetTextElementInWrongContext);
+    }
+
+    opened_context->to_set_text.emplace_back(std::make_tuple(element, element->resource_id, std::move(text)));
 }
 
 recompui::Style* recompui::ContextId::create_style() {
@@ -500,6 +638,28 @@ recompui::Element* recompui::ContextId::get_root_element() {
     }
 
     return &ctx->root_element;
+}
+
+recompui::Element* recompui::ContextId::get_autofocus_element() {
+    std::lock_guard lock{ context_state.all_contexts_lock };
+
+    Context* ctx = context_state.all_contexts.get(context_slotmap::key{ slot_id });
+    if (ctx == nullptr) {
+        context_error(*this, ContextErrorType::GetAutofocusInvalidContext);
+    }
+    
+    return ctx->autofocus_element;
+}
+
+void recompui::ContextId::set_autofocus_element(Element* element) {
+    std::lock_guard lock{ context_state.all_contexts_lock };
+
+    Context* ctx = context_state.all_contexts.get(context_slotmap::key{ slot_id });
+    if (ctx == nullptr) {
+        context_error(*this, ContextErrorType::SetAutofocusInvalidContext);
+    }
+
+    ctx->autofocus_element = element;
 }
 
 recompui::ContextId recompui::get_current_context() {

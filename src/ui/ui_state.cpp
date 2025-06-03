@@ -4,6 +4,7 @@
 #else
 #include <SDL2/SDL_video.h>
 #endif
+#include <chrono>
 
 #include "rt64_render_hooks.h"
 
@@ -19,9 +20,11 @@
 #include "recomp_input.h"
 #include "librecomp/game.hpp"
 #include "banjo_config.h"
+#include "banjo_support.h"
 #include "ui_rml_hacks.hpp"
 #include "ui_elements.h"
 #include "ui_mod_menu.h"
+#include "ui_mod_installer.h"
 #include "ui_renderer.h"
 
 bool can_focus(Rml::Element* element) {
@@ -150,7 +153,6 @@ Rml::Element* find_autofocus_element(Rml::Element* start) {
 struct ContextDetails {
     recompui::ContextId context;
     Rml::ElementDocument* document;
-    bool takes_input;
 };
 
 class UIState {
@@ -209,8 +211,6 @@ public:
 
         Rml::Debugger::Initialise(context);
         {
-            const Rml::String directory = "assets/";
-
             struct FontFace {
                 const char* filename;
                 bool fallback_face;
@@ -225,14 +225,17 @@ public:
             };
 
             for (const FontFace& face : font_faces) {
-                Rml::LoadFontFace(directory + face.filename, face.fallback_face);
+                auto font = banjo::get_asset_path(face.filename);
+                Rml::LoadFontFace(font.string(), face.fallback_face);
             }
         }
     }
 
-    void load_documents() {
-        launcher_menu_controller->load_document(context);
-        config_menu_controller->load_document(context);
+    void create_menus() {
+        recompui::init_styling(banjo::get_asset_path("recomp.rcss"));
+        launcher_menu_controller->load_document();
+        config_menu_controller->load_document();
+        recompui::init_prompt_context();
     }
 
     void unload() {
@@ -264,7 +267,7 @@ public:
             recompui::set_cursor_visible(mouse_is_active);
         }
 
-        Rml::ElementDocument* current_document = top_input_document();
+        Rml::ElementDocument* current_document = top_mouse_document();
         if (current_document == nullptr) {
             return;
         }
@@ -284,7 +287,7 @@ public:
     }
 
     void update_focus(bool mouse_moved, bool non_mouse_interacted) {
-        Rml::ElementDocument* current_document = top_input_document();
+        Rml::ElementDocument* current_document = top_mouse_document();
 
         if (current_document == nullptr) {
             return;
@@ -339,12 +342,10 @@ public:
             recompui::message_box("Attemped to show the same context twice");
             assert(false);
         }
-        bool takes_input = context.takes_input();
         Rml::ElementDocument* document = context.get_document();
         shown_contexts.push_back(ContextDetails{
             .context = context,
-            .document = document,
-            .takes_input = takes_input
+            .document = document
         });
 
         // auto& on_show = context.on_show;
@@ -356,6 +357,10 @@ public:
 
         document->PullToFront();
         document->Show();
+        recompui::Element* default_element = context.get_autofocus_element();
+        if (default_element) {
+            default_element->focus();
+        }
     }
 
     void hide_context(recompui::ContextId context) {
@@ -381,8 +386,12 @@ public:
         return std::find_if(shown_contexts.begin(), shown_contexts.end(), [context](auto& c){ return c.context == context; }) != shown_contexts.end();
     }
 
-    bool is_context_taking_input() {
-        return std::find_if(shown_contexts.begin(), shown_contexts.end(), [](auto& c){ return c.takes_input; }) != shown_contexts.end();
+    bool is_context_capturing_input() {
+        return std::find_if(shown_contexts.begin(), shown_contexts.end(), [](auto& c){ return c.context.captures_input(); }) != shown_contexts.end();
+    }
+
+    bool is_context_capturing_mouse() {
+        return std::find_if(shown_contexts.begin(), shown_contexts.end(), [](auto& c){ return c.context.captures_mouse(); }) != shown_contexts.end();
     }
 
     bool is_any_context_shown() {
@@ -392,7 +401,17 @@ public:
     Rml::ElementDocument* top_input_document() {
         // Iterate backwards and stop at the first context that takes input.
         for (auto it = shown_contexts.rbegin(); it != shown_contexts.rend(); it++) {
-            if (it->takes_input) {
+            if (it->context.captures_input()) {
+                return it->document;
+            }
+        }
+        return nullptr;
+    }
+
+    Rml::ElementDocument* top_mouse_document() {
+        // Iterate backwards and stop at the first context that takes input.
+        for (auto it = shown_contexts.rbegin(); it != shown_contexts.rend(); it++) {
+            if (it->context.captures_mouse()) {
                 return it->document;
             }
         }
@@ -430,7 +449,7 @@ void init_hook(RT64::RenderInterface* interface, RT64::RenderDevice* device) {
     std::locale::global(std::locale::classic());
 #endif
     ui_state = std::make_unique<UIState>(window, interface, device);
-    ui_state->load_documents();
+    ui_state->create_menus();
 }
 
 moodycamel::ConcurrentQueue<SDL_Event> ui_event_queue{};
@@ -553,9 +572,28 @@ void draw_hook(RT64::RenderCommandList* command_list, RT64::RenderFramebuffer* s
 
     bool config_was_open = recompui::is_context_shown(recompui::get_config_context_id()) || recompui::is_context_shown(recompui::get_config_sub_menu_context_id());
 
+    using clock = std::chrono::system_clock;
+
+    // TODO move these into a more appropriate place.
+    constexpr clock::duration start_repeat_delay = std::chrono::milliseconds{500};
+    constexpr clock::duration repeat_rate = std::chrono::milliseconds{50};
+    static clock::time_point next_repeat_time = {};
+    static int latest_controller_key_pressed = SDLK_UNKNOWN;
+
     while (recompui::try_deque_event(cur_event)) {
-        bool context_taking_input = recompui::is_context_taking_input();
+        bool context_capturing_input = recompui::is_context_capturing_input();
+        bool context_capturing_mouse = recompui::is_context_capturing_mouse();
+
+        // Handle up button events even when input is disabled to avoid missing them during binding.
+        if (cur_event.type == SDL_EventType::SDL_CONTROLLERBUTTONUP) {
+            int sdl_key = cont_button_to_key(cur_event.cbutton);
+            if (sdl_key == latest_controller_key_pressed) {
+                latest_controller_key_pressed = SDLK_UNKNOWN;
+            }
+        }
+
         if (!recomp::all_input_disabled()) {
+            bool is_mouse_input = false;
             // Implement some additional behavior for specific events on top of what RmlUi normally does with them.
             switch (cur_event.type) {
             case SDL_EventType::SDL_MOUSEMOTION: {
@@ -580,12 +618,20 @@ void draw_hook(RT64::RenderCommandList* command_list, RT64::RenderFramebuffer* s
             case SDL_EventType::SDL_MOUSEBUTTONDOWN:
                 mouse_moved = true;
                 mouse_clicked = true;
+                is_mouse_input = true;
+                break;
+                
+            case SDL_EventType::SDL_MOUSEBUTTONUP:
+            case SDL_EventType::SDL_MOUSEWHEEL:
+                is_mouse_input = true;
                 break;
                 
             case SDL_EventType::SDL_CONTROLLERBUTTONDOWN: {
-                int rml_key = cont_button_to_key(cur_event.cbutton);
-                if (context_taking_input && rml_key) {
-                    ui_state->context->ProcessKeyDown(RmlSDL::ConvertKey(rml_key), 0);
+                int sdl_key = cont_button_to_key(cur_event.cbutton);
+                if (context_capturing_input && sdl_key) {
+                    ui_state->context->ProcessKeyDown(RmlSDL::ConvertKey(sdl_key), 0);
+                    latest_controller_key_pressed = sdl_key;
+                    next_repeat_time = clock::now() + start_repeat_delay;
                 }
                 non_mouse_interacted = true;
                 cont_interacted = true;
@@ -594,6 +640,11 @@ void draw_hook(RT64::RenderCommandList* command_list, RT64::RenderFramebuffer* s
             case SDL_EventType::SDL_KEYDOWN:
                 non_mouse_interacted = true;
                 kb_interacted = true;
+                if (cur_event.key.keysym.scancode == SDL_Scancode::SDL_SCANCODE_F8) {
+                    if (banjo::get_debug_mode_enabled()) {
+                        Rml::Debugger::SetVisible(!Rml::Debugger::IsVisible());
+                    }
+                }
                 break;
             case SDL_EventType::SDL_USEREVENT:
                 if (cur_event.user.code == SDL_GameControllerAxis::SDL_CONTROLLER_AXIS_LEFTY) {
@@ -616,9 +667,11 @@ void draw_hook(RT64::RenderCommandList* command_list, RT64::RenderFramebuffer* s
                     if (!*await_stick_return) {
                         *await_stick_return = true;
                         non_mouse_interacted = true;
-                        int rml_key = cont_axis_to_key(cur_event.caxis, axis_value);
-                        if (context_taking_input && rml_key) {
-                            ui_state->context->ProcessKeyDown(RmlSDL::ConvertKey(rml_key), 0);
+                        int sdl_key = cont_axis_to_key(cur_event.caxis, axis_value);
+                        if (context_capturing_input && sdl_key) {
+                            ui_state->context->ProcessKeyDown(RmlSDL::ConvertKey(sdl_key), 0);
+                            latest_controller_key_pressed = sdl_key;
+                            next_repeat_time = clock::now() + start_repeat_delay;
                         }
                     }
                     non_mouse_interacted = true;
@@ -626,12 +679,25 @@ void draw_hook(RT64::RenderCommandList* command_list, RT64::RenderFramebuffer* s
                 }
                 else if (*await_stick_return && fabsf(axis_value) < 0.15f) {
                     *await_stick_return = false;
+                    // Stop pressing the current key if the axis that was released was the one triggering key presses.
+                    int sdl_key = cont_axis_to_key(cur_event.caxis, axis_value);
+                    if (sdl_key == latest_controller_key_pressed) {
+                        latest_controller_key_pressed = SDLK_UNKNOWN;
+                    }
                 }
                 break;
             }
 
-            if (context_taking_input) {
-                RmlSDL::InputEventHandler(ui_state->context, cur_event);
+            // Send the event to RmlUi if this type of event is being captured.
+            if (is_mouse_input) {
+                if (context_capturing_mouse) {
+                    RmlSDL::InputEventHandler(ui_state->context, cur_event);
+                }
+            }
+            else {
+                if (context_capturing_input) {
+                    RmlSDL::InputEventHandler(ui_state->context, cur_event);
+                }
             }
         }
 
@@ -661,6 +727,15 @@ void draw_hook(RT64::RenderCommandList* command_list, RT64::RenderFramebuffer* s
             }
         }
     } // end dequeue event loop
+
+    // Handle controller key repeats.
+    if (latest_controller_key_pressed != SDLK_UNKNOWN) {
+        clock::time_point now = clock::now();
+        if (now >= next_repeat_time) {
+            ui_state->context->ProcessKeyDown(RmlSDL::ConvertKey(latest_controller_key_pressed), 0);
+            next_repeat_time += repeat_rate;
+        }
+    }
 
     if (cont_interacted || kb_interacted || mouse_clicked) {
         recompui::set_cont_active(cont_interacted);
@@ -721,16 +796,28 @@ void recompui::message_box(const char* msg) {
 }
 
 void recompui::show_context(ContextId context, std::string_view param) {
-    std::lock_guard lock{ui_state_mutex};
+    ContextId prev_context = recompui::try_close_current_context();
+    {
+        std::lock_guard lock{ ui_state_mutex };
 
-    // TODO call the context's on_show callback with the param.
-    ui_state->show_context(context);
+        // TODO call the context's on_show callback with the param.
+        ui_state->show_context(context);
+    }
+    if (prev_context != ContextId::null()) {
+        prev_context.open();
+    }
 }
 
 void recompui::hide_context(ContextId context) {
-    std::lock_guard lock{ui_state_mutex};
+    ContextId prev_context = recompui::try_close_current_context();
+    {
+        std::lock_guard lock{ ui_state_mutex };
 
-    ui_state->hide_context(context);
+        ui_state->hide_context(context);
+    }
+    if (prev_context != ContextId::null()) {
+        prev_context.open();
+    }
 }
 
 void recompui::hide_all_contexts() {
@@ -751,14 +838,24 @@ bool recompui::is_context_shown(ContextId context) {
     return ui_state->is_context_shown(context);
 }
 
-bool recompui::is_context_taking_input() {
+bool recompui::is_context_capturing_input() {
     std::lock_guard lock{ui_state_mutex};
 
     if (!ui_state) {
         return false;
     }
 
-    return ui_state->is_context_taking_input();
+    return ui_state->is_context_capturing_input();
+}
+
+bool recompui::is_context_capturing_mouse() {
+    std::lock_guard lock{ui_state_mutex};
+
+    if (!ui_state) {
+        return false;
+    }
+
+    return ui_state->is_context_capturing_mouse();
 }
 
 bool recompui::is_any_context_shown() {
@@ -783,10 +880,131 @@ Rml::ElementDocument* recompui::create_empty_document() {
     return ui_state->context->CreateDocument();
 }
 
-void recompui::queue_image_from_bytes(const std::string &src, const std::vector<char> &bytes) {
-    ui_state->render_interface.queue_image_from_bytes(src, bytes);
+void recompui::queue_image_from_bytes_file(const std::string &src, const std::vector<char> &bytes) {
+    ui_state->render_interface.queue_image_from_bytes_file(src, bytes);
+}
+
+void recompui::queue_image_from_bytes_rgba32(const std::string &src, const std::vector<char> &bytes, uint32_t width, uint32_t height) {
+    ui_state->render_interface.queue_image_from_bytes_rgba32(src, bytes, width, height);
 }
 
 void recompui::release_image(const std::string &src) {
     Rml::ReleaseTexture(src);
+}
+
+void recompui::drop_files(const std::list<std::filesystem::path> &file_list) {
+    // Prevent mod installation after the game has started.
+    if (ultramodern::is_game_started()) {
+        return;
+    }
+
+    recompui::open_notification("Installing Mods", "Please Wait");
+    // TODO: Needs a progress callback and a prompt for every mod that needs to be confirmed to be overwritten.
+    // TODO: Run this on a background thread and use the callbacks to advance the state instead of blocking.
+    ModInstaller::Result result;
+    ModInstaller::start_mod_installation(file_list, nullptr, result);
+
+    recompui::close_prompt();
+
+    if (!result.error_messages.empty()) {
+        std::string error_label = std::accumulate(result.error_messages.begin(), result.error_messages.end(), std::string{},
+            [](const std::string &lhs, const std::string &rhs)
+            {
+                return lhs.empty() ? rhs : lhs + '\n' + rhs;
+            });
+
+        recompui::open_info_prompt("Error Installing Mods", error_label, "OK", {}, recompui::ButtonVariant::Tertiary);
+        std::vector<std::string> dummy_error_messages{};
+        ModInstaller::cancel_mod_installation(result, dummy_error_messages);
+        return;
+    }
+
+    std::vector<ModInstaller::Confirmation> confirmations{};
+
+    for (const ModInstaller::Installation& pending_install : result.pending_installations) {
+        if (pending_install.needs_overwrite_confirmation) {
+            // Get the mod details for the current mod at this file path.
+            std::string old_mod_id = recomp::mods::get_mod_id_from_filename(pending_install.mod_file.filename());
+            std::optional<recomp::mods::ModDetails> old_mod_details = {};
+
+            if (!old_mod_id.empty()) {
+                old_mod_details = recomp::mods::get_details_for_mod(old_mod_id);
+            }
+
+            if (old_mod_details) {
+                confirmations.emplace_back(ModInstaller::Confirmation {
+                    .old_display_name = old_mod_details->display_name,
+                    .new_display_name = pending_install.display_name,
+                    .old_mod_id = old_mod_details->mod_id,
+                    .new_mod_id = pending_install.mod_id,
+                    .old_version = old_mod_details->version,
+                    .new_version = pending_install.mod_version
+                });
+            }
+            else {
+                confirmations.emplace_back(ModInstaller::Confirmation {
+                    .old_display_name = "?",
+                    .new_display_name = pending_install.display_name,
+                    .old_mod_id = "",
+                    .new_mod_id = pending_install.mod_id,
+                    .old_version = recomp::Version{0, 0, 0, ""},
+                    .new_version = pending_install.mod_version
+                });
+            }
+        }
+    }
+
+    if (confirmations.empty()) {
+        std::vector<std::string> error_messages{};
+        ModInstaller::finish_mod_installation(result, error_messages);
+        ContextId old_context = recompui::try_close_current_context();
+        recompui::update_mod_list();
+        if (old_context != ContextId::null()) {
+            old_context.open();
+        }
+        // TODO show errors
+    }
+    else {
+        std::string prompt_text = std::accumulate(confirmations.begin(), confirmations.end(), std::string{},
+            [](const std::string &cur_text, const ModInstaller::Confirmation &confirmation)
+            {
+                std::string new_text{};
+                if (confirmation.old_display_name == confirmation.new_display_name) {
+                    new_text = confirmation.old_display_name + " (" + confirmation.old_version.to_string() + " -> " + confirmation.new_version.to_string() + ")";
+                }
+                else {
+                    new_text =
+                        confirmation.old_display_name + " (" + confirmation.old_version.to_string() + ") -> " +
+                        confirmation.new_display_name + " (" + confirmation.new_version.to_string() + ")";
+                }
+                return cur_text.empty() ? new_text : cur_text + '\n' + new_text;
+            });
+
+        // open prompt where confirm finishes the mod installation with the overwritten files
+        recompui::open_choice_prompt("Overwrite Mods?",
+            prompt_text,
+            "Overwrite",
+            "Cancel",
+            [result]() {
+                std::vector<std::string> error_messages{};
+                recomp::mods::close_mods();
+                ModInstaller::finish_mod_installation(result, error_messages);
+                ContextId old_context = recompui::try_close_current_context();
+                recompui::update_mod_list();
+                if (old_context != ContextId::null()) {
+                    old_context.open();
+                }
+                // TODO show errors
+            },
+            [result]() {
+                std::vector<std::string> error_messages{};
+                ModInstaller::cancel_mod_installation(result, error_messages);
+                // TODO show errors
+            },
+            recompui::ButtonVariant::Success,
+            recompui::ButtonVariant::Error,
+            true,
+            ""
+        );
+    }
 }

@@ -25,6 +25,7 @@
 #include "banjo_config.h"
 #include "banjo_sound.h"
 #include "banjo_render.h"
+#include "banjo_support.h"
 #include "banjo_game.h"
 #include "recomp_data.h"
 #include "ovl_patches.hpp"
@@ -45,14 +46,15 @@
 
 #include "../../lib/rt64/src/contrib/stb/stb_image.h"
 
-const std::string version_string = "0.0.1";
+const std::string version_string = "0.1.0";
 
 template<typename... Ts>
 void exit_error(const char* str, Ts ...args) {
     // TODO pop up an error
     ((void)fprintf(stderr, str, args), ...);
     assert(false);
-    std::quick_exit(EXIT_FAILURE);
+        
+    ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
 }
 
 ultramodern::gfx_callbacks_t::gfx_data_t create_gfx() {
@@ -126,11 +128,13 @@ SDL_Window* window;
 ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callbacks_t::gfx_data_t) {
     uint32_t flags = SDL_WINDOW_RESIZABLE;
 
-#if defined(RT64_SDL_WINDOW_VULKAN)
+#if defined(__APPLE__)
+    flags |= SDL_WINDOW_METAL;
+#elif defined(RT64_SDL_WINDOW_VULKAN)
     flags |= SDL_WINDOW_VULKAN;
 #endif
 
-    window = SDL_CreateWindow("Banjo: Recompiled", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1600, 960,  flags);
+    window = SDL_CreateWindow("Zelda 64: Recompiled", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1600, 960,  flags);
 #if defined(__linux__)
     SetImageAsIcon("icons/512.png",window);
     if (ultramodern::renderer::get_graphics_config().wm_option == ultramodern::renderer::WindowMode::Fullscreen) { // TODO: Remove once RT64 gets native fullscreen support on Linux
@@ -152,6 +156,9 @@ ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callbacks_t::
     return ultramodern::renderer::WindowHandle{ wmInfo.info.win.window, GetCurrentThreadId() };
 #elif defined(__linux__) || defined(__ANDROID__)
     return ultramodern::renderer::WindowHandle{ window };
+#elif defined(__APPLE__)
+    SDL_MetalView view = SDL_Metal_CreateView(window);
+    return ultramodern::renderer::WindowHandle{ wmInfo.info.cocoa.window,  SDL_Metal_GetLayer(view) };
 #else
     static_assert(false && "Unimplemented");
 #endif
@@ -503,13 +510,15 @@ void release_preload(PreloadContext& context) {
 #endif
 
 void enable_texture_pack(recomp::mods::ModContext& context, const recomp::mods::ModHandle& mod) {
-    (void)context;
-    banjo::renderer::enable_texture_pack(mod);
+    banjo::renderer::enable_texture_pack(context, mod);
 }
 
-void disable_texture_pack(recomp::mods::ModContext& context, const recomp::mods::ModHandle& mod) {
-    (void)context;
+void disable_texture_pack(recomp::mods::ModContext&, const recomp::mods::ModHandle& mod) {
     banjo::renderer::disable_texture_pack(mod);
+}
+
+void reorder_texture_pack(recomp::mods::ModContext&) {
+    banjo::renderer::trigger_texture_pack_update();
 }
 
 #define REGISTER_FUNC(name) recomp::overlays::register_base_export(#name, name)
@@ -555,14 +564,22 @@ int main(int argc, char** argv) {
     // Force wasapi on Windows, as there seems to be some issue with sample queueing with directsound currently.
     SDL_setenv("SDL_AUDIODRIVER", "wasapi", true);
 #endif
-    //printf("Current dir: %ls\n", std::filesystem::current_path().c_str());
+
+#if defined(__linux__) && defined(RECOMP_FLATPAK)
+    // When using Flatpak, applications tend to launch from the home directory by default.
+    // Mods might use the current working directory to store the data, so we switch it to a directory
+    // with persistent data storage and write permissions under Flatpak to ensure it works.
+    std::error_code ec;
+    std::filesystem::current_path("/var/data", ec);
+#endif
 
     // Initialize SDL audio and set the output frequency.
     SDL_InitSubSystem(SDL_INIT_AUDIO);
     reset_audio(48000);
 
     // Source controller mappings file
-    if (SDL_GameControllerAddMappingsFromFile("gamecontrollerdb.txt") < 0) {
+    std::u8string controller_db_path = (banjo::get_program_path() / "recompcontrollerdb.txt").u8string();
+    if (SDL_GameControllerAddMappingsFromFile(reinterpret_cast<const char *>(controller_db_path.c_str())) < 0) {
         fprintf(stderr, "Failed to load controller mappings: %s\n", SDL_GetError());
     }
 
@@ -584,10 +601,11 @@ int main(int argc, char** argv) {
     REGISTER_FUNC(recomp_get_inverted_axes);
     REGISTER_FUNC(recomp_get_analog_inverted_axes);
     recompui::register_ui_exports();
+    recomputil::register_data_api_exports();
 
     banjo::register_bk_overlays();
     banjo::register_bk_patches();
-    recomp::init_extended_actor_data();
+    recomputil::init_extended_actor_data();
     banjo::load_config();
 
     recomp::rsp::callbacks_t rsp_callbacks{
@@ -636,6 +654,7 @@ int main(int argc, char** argv) {
         .allow_runtime_toggle = true,
         .on_enabled = enable_texture_pack,
         .on_disabled = disable_texture_pack,
+        .on_reordered = reorder_texture_pack,
     };
     auto texture_pack_content_type_id = recomp::mods::register_mod_content_type(texture_pack_content_type);
 

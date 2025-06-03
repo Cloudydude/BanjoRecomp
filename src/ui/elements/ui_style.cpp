@@ -1,4 +1,5 @@
 #include "ui_style.h"
+#include "ui_element.h"
 
 #include <cassert>
 
@@ -169,6 +170,22 @@ namespace recompui {
         }
     }
 
+    static Rml::PropertyId nav_to_property(NavDirection dir) {
+        switch (dir) {
+            case NavDirection::Up:
+                return Rml::PropertyId::NavUp;
+            case NavDirection::Right:
+                return Rml::PropertyId::NavRight;
+            case NavDirection::Down:
+                return Rml::PropertyId::NavDown;
+            case NavDirection::Left:
+                return Rml::PropertyId::NavLeft;
+            default:
+                assert(false && "Unknown nav direction.");
+                return Rml::PropertyId::Invalid;
+        }
+    }
+
     void Style::set_property(Rml::PropertyId property_id, const Rml::Property &property) {
         property_map[property_id] = property;
     }
@@ -179,6 +196,17 @@ namespace recompui {
 
     Style::~Style() {
 
+    }
+
+    void Style::set_visibility(Visibility visibility) {
+        switch (visibility) {
+        case Visibility::Visible:
+            set_property(Rml::PropertyId::Visibility, Rml::Style::Visibility::Visible);
+            break;
+        case Visibility::Hidden:
+            set_property(Rml::PropertyId::Visibility, Rml::Style::Visibility::Hidden);
+            break;
+        }
     }
 
     void Style::set_position(Position position) {
@@ -401,7 +429,7 @@ namespace recompui {
     void Style::set_cursor(Cursor cursor) {
         switch (cursor) {
         case Cursor::None:
-            assert(false && "Unimplemented.");
+            set_property(Rml::PropertyId::Cursor, Rml::Property("", Rml::Unit::STRING));
             break;
         case Cursor::Pointer:
             set_property(Rml::PropertyId::Cursor, Rml::Property("pointer", Rml::Unit::STRING));
@@ -459,6 +487,12 @@ namespace recompui {
             break;
         case FlexDirection::Column:
             set_property(Rml::PropertyId::FlexDirection, Rml::Style::FlexDirection::Column);
+            break;
+        case FlexDirection::RowReverse:
+            set_property(Rml::PropertyId::FlexDirection, Rml::Style::FlexDirection::RowReverse);
+            break;
+        case FlexDirection::ColumnReverse:
+            set_property(Rml::PropertyId::FlexDirection, Rml::Style::FlexDirection::ColumnReverse);
             break;
         default:
             assert(false && "Unknown flex direction.");
@@ -545,5 +579,34 @@ namespace recompui {
     void Style::set_font_family(std::string_view family) {
         set_property(Rml::PropertyId::FontFamily, Rml::Property(Rml::String{ family }, Rml::Unit::UNKNOWN));
     }
+    
+    void Style::set_nav_auto(NavDirection dir) {
+        set_property(nav_to_property(dir), Rml::Style::Nav::Auto);
+    }
+
+    void Style::set_nav_none(NavDirection dir) {
+        set_property(nav_to_property(dir), Rml::Style::Nav::None);
+    }
+
+    void Style::set_nav(NavDirection dir, Element* element) {
+        set_property(nav_to_property(dir), Rml::Property(Rml::String{ "#" + element->get_id() }, Rml::Unit::STRING));
+    }
+
+    void Style::set_nav_manual(NavDirection dir, const std::string& target) {
+        set_property(nav_to_property(dir), Rml::Property(target, Rml::Unit::STRING));
+    }
+
+    void Style::set_tab_index_auto() {
+        set_property(Rml::PropertyId::TabIndex, Rml::Style::Nav::Auto);
+    }
+
+    void Style::set_tab_index_none() {
+        set_property(Rml::PropertyId::TabIndex, Rml::Style::Nav::None);
+    }
+    
+    void Style::set_focusable(bool focusable) {
+        set_property(Rml::PropertyId::Focus, focusable ? Rml::Style::Focus::Auto : Rml::Style::Focus::None);
+    }
+
 
 } // namespace recompui

@@ -20,6 +20,7 @@ namespace recompui {
     public:
         Style();
         virtual ~Style();
+        void set_visibility(Visibility visibility);
         void set_position(Position position);
         void set_left(float left, Unit unit = Unit::Dp);
         void set_top(float top, Unit unit = Unit::Dp);
@@ -93,6 +94,13 @@ namespace recompui {
         void set_drag(Drag drag);
         void set_tab_index(TabIndex focus);
         void set_font_family(std::string_view family);
+        virtual void set_nav_auto(NavDirection dir);
+        virtual void set_nav_none(NavDirection dir);
+        virtual void set_nav(NavDirection dir, Element* element);
+        virtual void set_nav_manual(NavDirection dir, const std::string& target);
+        void set_tab_index_auto();
+        void set_tab_index_none();
+        void set_focusable(bool focusable);
         virtual bool is_element() { return false; }
         ResourceId get_resource_id() { return resource_id; }
     };

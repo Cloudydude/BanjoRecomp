@@ -1,5 +1,8 @@
 #include "recomp_ui.h"
 
+#include "ui_helpers.h"
+#include "ui_api_images.h"
+
 #include "core/ui_context.h"
 #include "core/ui_resource.h"
 
@@ -12,6 +15,7 @@
 #include "elements/ui_radio.h"
 #include "elements/ui_scroll_container.h"
 #include "elements/ui_slider.h"
+#include "elements/ui_span.h"
 #include "elements/ui_style.h"
 #include "elements/ui_text_input.h"
 #include "elements/ui_toggle.h"
@@ -19,91 +23,10 @@
 
 #include "librecomp/overlays.hpp"
 #include "librecomp/helpers.hpp"
+#include "librecomp/addresses.hpp"
+#include "ultramodern/error_handling.hpp"
 
 using namespace recompui;
-
-constexpr ResourceId root_element_id{ 0xFFFFFFFE };
-
-// Helpers
-
-ContextId get_context(uint8_t* rdram, recomp_context* ctx) {
-    uint32_t context_id = _arg<0, uint32_t>(rdram, ctx);
-    return ContextId{ .slot_id = context_id };
-}
-
-template <int arg_index>
-std::string arg_string(uint8_t* rdram, recomp_context* ctx) {
-    PTR(char) str = _arg<arg_index, PTR(char)>(rdram, ctx);
-
-    // Get the length of the byteswapped string.
-    size_t len = 0;
-    while (MEM_B(str, len) != 0x00) {
-        len++;
-    }
-
-    std::string ret{};
-    ret.reserve(len + 1);
-
-    for (size_t i = 0; i < len; i++) {
-        ret += (char)MEM_B(str, i);
-    }
-
-    return ret;
-}
-
-template <int arg_index>
-ResourceId arg_resource_id(uint8_t* rdram, recomp_context* ctx) {
-    uint32_t slot_id = _arg<arg_index, uint32_t>(rdram, ctx);
-    
-    return ResourceId{ .slot_id = slot_id };
-}
-
-template <int arg_index>
-Element* arg_element(uint8_t* rdram, recomp_context* ctx, ContextId ui_context) {
-    ResourceId resource = arg_resource_id<arg_index>(rdram, ctx);
-
-    if (resource == ResourceId::null()) {
-        return nullptr;
-    }
-    else if (resource == root_element_id) {
-        return ui_context.get_root_element();
-    }
-
-    return resource.as_element();
-}
-
-template <int arg_index>
-Style* arg_style(uint8_t* rdram, recomp_context* ctx) {
-    ResourceId resource = arg_resource_id<arg_index>(rdram, ctx);
-
-    if (resource == ResourceId::null()) {
-        return nullptr;
-    }
-    else if (resource == root_element_id) {
-        ContextId ui_context = recompui::get_current_context();
-        return ui_context.get_root_element();
-    }
-
-    return *resource;
-}
-
-template <int arg_index>
-Color arg_color(uint8_t* rdram, recomp_context* ctx) {
-    PTR(u8) color_arg = _arg<arg_index, PTR(u8)>(rdram, ctx);
-
-    Color ret{};
-
-    ret.r = MEM_B(0, color_arg);
-    ret.g = MEM_B(1, color_arg);
-    ret.b = MEM_B(2, color_arg);
-    ret.a = MEM_B(3, color_arg);
-
-    return ret;
-}
-
-void return_resource(recomp_context* ctx, ResourceId resource) {
-    _return<uint32_t>(ctx, resource.slot_id);
-}
 
 // Contexts
 void recompui_create_context(uint8_t* rdram, recomp_context* ctx) {
@@ -144,6 +67,20 @@ void recompui_hide_context(uint8_t* rdram, recomp_context* ctx) {
     recompui::hide_context(ui_context);
 }
 
+void recompui_set_context_captures_input(uint8_t* rdram, recomp_context* ctx) {
+    ContextId ui_context = get_context(rdram, ctx);
+    bool captures_input = _arg<1, int>(rdram, ctx) != 0;
+
+    ui_context.set_captures_input(captures_input);
+}
+
+void recompui_set_context_captures_mouse(uint8_t* rdram, recomp_context* ctx) {
+    ContextId ui_context = get_context(rdram, ctx);
+    bool captures_mouse = _arg<1, int>(rdram, ctx) != 0;
+
+    ui_context.set_captures_mouse(captures_mouse);
+}
+
 // Resources
 void recompui_create_style(uint8_t* rdram, recomp_context* ctx) {
     ContextId ui_context = get_context(rdram, ctx);
@@ -160,17 +97,110 @@ void recompui_create_element(uint8_t* rdram, recomp_context* ctx) {
     return_resource(ctx, ret->get_resource_id());
 }
 
+void recompui_destroy_element(uint8_t* rdram, recomp_context* ctx) {
+    Style* parent_resource = arg_style<0>(rdram, ctx);
+
+    if (!parent_resource->is_element()) {
+        recompui::message_box("Fatal error in mod - attempted to remove child from non-element or element not found in context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+
+    Element* parent = static_cast<Element*>(parent_resource);
+    ResourceId to_remove = arg_resource_id<1>(rdram, ctx);
+
+    if (!parent->remove_child(to_remove)) {
+        recompui::message_box("Fatal error in mod - attempted to remove child from wrong parent");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+}
+
 void recompui_create_button(uint8_t* rdram, recomp_context* ctx) {
     ContextId ui_context = get_context(rdram, ctx);
     Element* parent = arg_element<1>(rdram, ctx, ui_context);
-    std::string text = arg_string<2>(rdram, ctx);
+    std::string text = _arg_string<2>(rdram, ctx);
     uint32_t style = _arg<3, uint32_t>(rdram, ctx);
 
     Button* ret = ui_context.create_element<Button>(parent, text, static_cast<ButtonStyle>(style));
     return_resource(ctx, ret->get_resource_id());
 }
 
+void recompui_create_label(uint8_t* rdram, recomp_context* ctx) {
+    ContextId ui_context = get_context(rdram, ctx);
+    Element* parent = arg_element<1>(rdram, ctx, ui_context);
+    std::string text = _arg_string<2>(rdram, ctx);
+    uint32_t style = _arg<3, uint32_t>(rdram, ctx);
+
+    Element* ret = ui_context.create_element<Label>(parent, text, static_cast<LabelStyle>(style));
+    return_resource(ctx, ret->get_resource_id());
+}
+
+void recompui_create_span(uint8_t* rdram, recomp_context* ctx) {
+    ContextId ui_context = get_context(rdram, ctx);
+    Element* parent = arg_element<1>(rdram, ctx, ui_context);
+    std::string text = _arg_string<2>(rdram, ctx);
+
+    Element* ret = ui_context.create_element<Span>(parent, text);
+    return_resource(ctx, ret->get_resource_id());
+}
+
+void recompui_create_textinput(uint8_t* rdram, recomp_context* ctx) {
+    ContextId ui_context = get_context(rdram, ctx);
+    Element* parent = arg_element<1>(rdram, ctx, ui_context);
+
+    Element* ret = ui_context.create_element<TextInput>(parent);
+    return_resource(ctx, ret->get_resource_id());
+}
+
+void recompui_create_passwordinput(uint8_t* rdram, recomp_context* ctx) {
+    ContextId ui_context = get_context(rdram, ctx);
+    Element* parent = arg_element<1>(rdram, ctx, ui_context);
+
+    Element* ret = ui_context.create_element<TextInput>(parent, false);
+    return_resource(ctx, ret->get_resource_id());
+}
+
+void recompui_create_labelradio(uint8_t* rdram, recomp_context* ctx) {
+    ContextId ui_context = get_context(rdram, ctx);
+    Element* parent = arg_element<1>(rdram, ctx, ui_context);
+    PTR(PTR(char)) options = _arg<2, PTR(PTR(char))>(rdram, ctx);
+    uint32_t num_options = _arg<3, uint32_t>(rdram, ctx);
+
+    Radio* ret = ui_context.create_element<Radio>(parent);
+
+    for (size_t i = 0; i < num_options; i++) {
+        ret->add_option(decode_string(rdram, MEM_W(sizeof(uint32_t) * i, options)));
+    }
+
+    return_resource(ctx, ret->get_resource_id());
+}
+
+void recompui_create_slider(uint8_t* rdram, recomp_context* ctx) {
+    ContextId ui_context = get_context(rdram, ctx);
+    Element* parent = arg_element<1>(rdram, ctx, ui_context);
+    uint32_t type = _arg<2, uint32_t>(rdram, ctx);
+    float min_value = arg_float3(rdram, ctx);
+    float max_value = arg_float4(rdram, ctx);
+    float step = arg_float5(rdram, ctx);
+    float initial_value = arg_float6(rdram, ctx);
+
+    Slider* ret = ui_context.create_element<Slider>(parent, static_cast<SliderType>(type));
+    ret->set_min_value(min_value);
+    ret->set_max_value(max_value);
+    ret->set_step_value(step);
+    ret->set_value(initial_value);
+    return_resource(ctx, ret->get_resource_id());
+}
+
 // Position and Layout
+void recompui_set_visibility(uint8_t* rdram, recomp_context* ctx) {
+    Style* resource = arg_style<0>(rdram, ctx);
+    uint32_t visibility = _arg<1, uint32_t>(rdram, ctx);
+
+    resource->set_visibility(static_cast<Visibility>(visibility));
+}
+
 void recompui_set_position(uint8_t* rdram, recomp_context* ctx) {
     Style* resource = arg_style<0>(rdram, ctx);
     uint32_t position = _arg<1, uint32_t>(rdram, ctx);
@@ -610,6 +640,19 @@ void recompui_set_overflow_y(uint8_t* rdram, recomp_context* ctx) {
 }
 
 // Text and Fonts
+void recompui_set_text(uint8_t* rdram, recomp_context* ctx) {
+    Style* resource = arg_style<0>(rdram, ctx);
+
+    if (resource == nullptr || !resource->is_element()) {
+        recompui::message_box("Fatal error in mod - attempted to set text of non-element or element not found in context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+
+    Element* element = static_cast<Element*>(resource);
+    element->set_text(_arg_string<1>(rdram, ctx));
+}
+
 void recompui_set_font_size(uint8_t* rdram, recomp_context* ctx) {
     Style* resource = arg_style<0>(rdram, ctx);
     float size = _arg_float_a1(rdram, ctx);
@@ -696,6 +739,192 @@ void recompui_set_tab_index(uint8_t* rdram, recomp_context* ctx) {
     resource->set_tab_index(static_cast<TabIndex>(tab_index));
 }
 
+// Values
+void recompui_get_input_value_u32(uint8_t* rdram, recomp_context* ctx) {
+    Style* resource = arg_style<0>(rdram, ctx);
+
+    if (resource == nullptr || !resource->is_element()) {
+        recompui::message_box("Fatal error in mod - attempted to get value of non-element or element not found in context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+    
+    Element* element = static_cast<Element*>(resource);
+    _return<uint32_t>(ctx, element->get_input_value_u32());
+}
+
+void recompui_get_input_value_float(uint8_t* rdram, recomp_context* ctx) {
+    Style* resource = arg_style<0>(rdram, ctx);
+
+    if (resource == nullptr || !resource->is_element()) {
+        recompui::message_box("Fatal error in mod - attempted to get value of non-element or element not found in context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+    
+    Element* element = static_cast<Element*>(resource);
+    _return<float>(ctx, element->get_input_value_float());
+}
+
+void recompui_get_input_text(uint8_t* rdram, recomp_context* ctx) {
+    Style* resource = arg_style<0>(rdram, ctx);
+
+    if (resource == nullptr || !resource->is_element()) {
+        recompui::message_box("Fatal error in mod - attempted to get input text of non-element or element not found in context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+    
+    Element* element = static_cast<Element*>(resource);
+    std::string ret = element->get_input_text();
+    return_string(rdram, ctx, ret);
+}
+
+void recompui_set_input_value_u32(uint8_t* rdram, recomp_context* ctx) {
+    Style* resource = arg_style<0>(rdram, ctx);
+    uint32_t value = _arg<1, uint32_t>(rdram, ctx);
+
+    if (resource == nullptr || !resource->is_element()) {
+        recompui::message_box("Fatal error in mod - attempted to set value of non-element or element not found in context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+    
+    Element* element = static_cast<Element*>(resource);
+    element->set_input_value_u32(value);
+}
+
+void recompui_set_input_value_float(uint8_t* rdram, recomp_context* ctx) {
+    Style* resource = arg_style<0>(rdram, ctx);
+    float value = _arg_float_a1(rdram, ctx);
+
+    if (resource == nullptr || !resource->is_element()) {
+        recompui::message_box("Fatal error in mod - attempted to set value of non-element or element not found in context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+    
+    Element* element = static_cast<Element*>(resource);
+    element->set_input_value_float(value);
+}
+
+void recompui_set_input_text(uint8_t* rdram, recomp_context* ctx) {
+    Style* resource = arg_style<0>(rdram, ctx);
+
+    if (resource == nullptr || !resource->is_element()) {
+        recompui::message_box("Fatal error in mod - attempted to set input text of non-element or element not found in context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+
+    Element* element = static_cast<Element*>(resource);
+    element->set_input_text(_arg_string<1>(rdram, ctx));
+}
+
+// Callbacks
+void recompui_register_callback(uint8_t* rdram, recomp_context* ctx) {
+    ContextId ui_context = recompui::get_current_context();
+
+    if (ui_context == ContextId::null()) {
+        recompui::message_box("Fatal error in mod - attempted to register callback with no active context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+
+    Style* resource = arg_style<0>(rdram, ctx);
+
+    if (resource == nullptr || !resource->is_element()) {
+        recompui::message_box("Fatal error in mod - attempted to register callback on non-element or element not found in context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+
+    Element* element = static_cast<Element*>(resource);
+    PTR(void) callback = _arg<1, PTR(void)>(rdram, ctx);
+    PTR(void) userdata = _arg<2, PTR(void)>(rdram, ctx);
+
+    element->register_callback(ui_context, callback, userdata);
+}
+
+// Navigation
+void recompui_set_nav_auto(uint8_t* rdram, recomp_context* ctx) {
+    ContextId ui_context = recompui::get_current_context();
+
+    if (ui_context == ContextId::null()) {
+        recompui::message_box("Fatal error in mod - attempted to set element navigation with no active context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+
+    Style* resource = arg_style<0>(rdram, ctx);
+
+    if (resource == nullptr || !resource->is_element()) {
+        recompui::message_box("Fatal error in mod - attempted to set navigation on non-element or element not found in context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+
+    Element* element = static_cast<Element*>(resource);
+    u32 nav_dir = _arg<1, u32>(rdram, ctx);
+
+    element->set_nav_auto(static_cast<recompui::NavDirection>(nav_dir));
+}
+
+void recompui_set_nav_none(uint8_t* rdram, recomp_context* ctx) {
+    ContextId ui_context = recompui::get_current_context();
+
+    if (ui_context == ContextId::null()) {
+        recompui::message_box("Fatal error in mod - attempted to set element navigation with no active context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+
+    Style* resource = arg_style<0>(rdram, ctx);
+
+    if (resource == nullptr || !resource->is_element()) {
+        recompui::message_box("Fatal error in mod - attempted to set navigation on non-element or element not found in context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+
+    Element* element = static_cast<Element*>(resource);
+    u32 nav_dir = _arg<1, u32>(rdram, ctx);
+
+    element->set_nav_none(static_cast<recompui::NavDirection>(nav_dir));
+}
+
+void recompui_set_nav(uint8_t* rdram, recomp_context* ctx) {
+    ContextId ui_context = recompui::get_current_context();
+
+    if (ui_context == ContextId::null()) {
+        recompui::message_box("Fatal error in mod - attempted to set element navigation with no active context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+
+    Style* resource = arg_style<0>(rdram, ctx);
+
+    if (resource == nullptr || !resource->is_element()) {
+        recompui::message_box("Fatal error in mod - attempted to set navigation on non-element or element not found in context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+
+    Style* target_resource = arg_style<2>(rdram, ctx);
+
+    if (target_resource == nullptr || !target_resource->is_element()) {
+        recompui::message_box("Fatal error in mod - attempted to set element navigation to non-element or target element not found in context");
+        assert(false);
+        ultramodern::error_handling::quick_exit(__FILE__, __LINE__, __FUNCTION__);
+    }
+
+    Element* element = static_cast<Element*>(resource);
+    Element* target_element = static_cast<Element*>(target_resource);
+    u32 nav_dir = _arg<1, u32>(rdram, ctx);
+
+    element->set_nav(static_cast<recompui::NavDirection>(nav_dir), target_element);
+}
+
 #define REGISTER_FUNC(name) recomp::overlays::register_base_export(#name, name)
 
 void recompui::register_ui_exports() {
@@ -705,9 +934,19 @@ void recompui::register_ui_exports() {
     REGISTER_FUNC(recompui_context_root);
     REGISTER_FUNC(recompui_show_context);
     REGISTER_FUNC(recompui_hide_context);
+    REGISTER_FUNC(recompui_set_context_captures_input);
+    REGISTER_FUNC(recompui_set_context_captures_mouse);
     REGISTER_FUNC(recompui_create_style);
     REGISTER_FUNC(recompui_create_element);
+    REGISTER_FUNC(recompui_destroy_element);
     REGISTER_FUNC(recompui_create_button);
+    REGISTER_FUNC(recompui_create_label);
+    // REGISTER_FUNC(recompui_create_span);
+    REGISTER_FUNC(recompui_create_textinput);
+    REGISTER_FUNC(recompui_create_passwordinput);
+    REGISTER_FUNC(recompui_create_labelradio);
+    REGISTER_FUNC(recompui_create_slider);
+    REGISTER_FUNC(recompui_set_visibility);
     REGISTER_FUNC(recompui_set_position);
     REGISTER_FUNC(recompui_set_left);
     REGISTER_FUNC(recompui_set_top);
@@ -766,6 +1005,7 @@ void recompui::register_ui_exports() {
     REGISTER_FUNC(recompui_set_overflow);
     REGISTER_FUNC(recompui_set_overflow_x);
     REGISTER_FUNC(recompui_set_overflow_y);
+    REGISTER_FUNC(recompui_set_text);
     REGISTER_FUNC(recompui_set_font_size);
     REGISTER_FUNC(recompui_set_letter_spacing);
     REGISTER_FUNC(recompui_set_line_height);
@@ -777,4 +1017,15 @@ void recompui::register_ui_exports() {
     REGISTER_FUNC(recompui_set_column_gap);
     REGISTER_FUNC(recompui_set_drag);
     REGISTER_FUNC(recompui_set_tab_index);
+    REGISTER_FUNC(recompui_get_input_value_u32);
+    REGISTER_FUNC(recompui_get_input_value_float);
+    REGISTER_FUNC(recompui_get_input_text);
+    REGISTER_FUNC(recompui_set_input_value_u32);
+    REGISTER_FUNC(recompui_set_input_value_float);
+    REGISTER_FUNC(recompui_set_input_text);
+    REGISTER_FUNC(recompui_set_nav_auto);
+    REGISTER_FUNC(recompui_set_nav_none);
+    REGISTER_FUNC(recompui_set_nav);
+    REGISTER_FUNC(recompui_register_callback);
+    register_ui_image_exports();
 }
