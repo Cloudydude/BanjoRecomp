@@ -45,6 +45,8 @@ typedef struct chjiggy_s
 } ActorLocal_Jiggy;
 
 extern s32 D_80385F30[0x2C];
+extern u8  D_80381E58[5];
+
 extern u32 gGlobalTimer;
 extern ActorArray *suBaddieActorArray;
 extern ActorAnimationInfo chJinjoAnimations[10];
@@ -446,7 +448,7 @@ static void jinjo_collision(ActorMarker *this, ActorMarker *other)
 RECOMP_PATCH
 void chJinjo_update(Actor *this)
 {
-    if (!this->initialized && jinjo_saving_enabled_cached && jinjo_saving_is_allowed_by_volatileFlags())
+    if (!this->initialized && jinjo_saving_enabled_cached && jinjo_saving_is_allowed_by_volatileFlags() && !recomp_in_demo_playback_game_mode())
     {
         // Check if this jinjo has already been marked as collected before even being born (loaded)
 
@@ -510,6 +512,10 @@ void chJinjo_update(Actor *this)
              */
             SavedJinjo_ensure_all_marked_collected_for_level(levelIdx);
             D_80385F30[ITEM_12_JINJOS] = 0b11111;
+
+            // Update icon state in HUD
+            for (u32 i = 0; i < 5; i++)
+                D_80381E58[i] = 3;
         }
         else
         {
