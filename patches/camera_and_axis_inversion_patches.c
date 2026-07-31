@@ -217,7 +217,7 @@ s32 recomp_get_first_person_inverted_x() {
 s32 recomp_get_first_person_inverted_y() {
     s32 inverted_x, inverted_y;
     if (recomp_in_demo_playback_game_mode()) {
-        inverted_y = FALSE;
+        inverted_y = TRUE;
     } else {
         recomp_get_first_person_inverted_axes(&inverted_x, &inverted_y);
     }
@@ -580,6 +580,11 @@ RECOMP_PATCH void func_80291154(void) {
             ncDynamicCamera_setState(DYNAMIC_CAMERA_STATE_R_LOOK);
             func_80291488(0x4);
             func_80290F14();
+
+            // The camera target must be reinitialized when the player exits the pole climbing state so the target doesn't stay on the climbable object.
+            if ((D_8037DB40 == 3) && (player_movementGroup() != BSGROUP_5_CLIMB)) {
+                func_802C0150(2);
+            }
         }
         else {
             tmp = func_8029105C(7);
@@ -669,6 +674,21 @@ RECOMP_PATCH void func_802A3648(void){
         pitch_setIdeal(ml_map_f(tmp_f0, 0.0f, 1.0f, 0.0f, 80.0f));
 }
 
+// @recomp Patched to allow configuring Y axis inversion when flying as the bee
+RECOMP_PATCH void _bsBeeFly_updatePitch(void){
+    // @recomp Get the axis inversion setting
+    s32 inverted_y = recomp_get_flying_and_swimming_inverted_y();
+
+    f32 stickY = inverted_y ? bastick_getY() : -bastick_getY();
+
+    if(stickY < 0.0f){
+        pitch_setIdeal(ml_map_f(stickY, -1.0f, 0.0f, 300.0f, 360.0f));
+    } else {
+        pitch_setIdeal(ml_map_f(stickY, 0.0f, 1.0f, 0.0f, 80.0f));
+    }
+    
+}
+
 // @recomp Patched to allow configuring X axis inversion when flying
 RECOMP_PATCH void func_802A354C(void){
     f32 yaw_range;
@@ -692,6 +712,33 @@ RECOMP_PATCH void func_802A354C(void){
     }
     roll_setIdeal(ml_map_f(sp2C, -1.0f, 1.0f, -roll_range, roll_range));
     yaw_setIdeal(mlNormalizeAngle(yaw_getIdeal() + ml_map_f(sp2C, -1.0f, 1.0f, yaw_range, -yaw_range)));
+}
+
+void ncDynamicCam4_func_802BFE50(f32, f32, f32);
+
+// @recomp Patched to allow configuring X axis inversion when flying as the bee
+RECOMP_PATCH void _bsBeeFly_updateYaw(void){
+    f32 sp34;
+    f32 sp30;
+    f32 stickX;
+
+    // @recomp Get the axis inversion setting
+    s32 inverted_x = recomp_get_flying_and_swimming_inverted_x();
+
+    stickX = inverted_x ? -bastick_getX() : bastick_getX();
+    ncDynamicCam4_func_802BFE50(2.0f, 2000.0f, 350.0f);
+    if(bakey_held(BUTTON_R)){
+        yaw_setVelocityBounded(500.0f, 30.0f);
+        sp34 = 6.0f;
+        sp30 = 85.0f;
+    }
+    else{
+        yaw_setVelocityBounded(500.0f, 2.0f);
+        sp34 = 3.0f;
+        sp30 = 65.0f;
+    }
+    roll_setIdeal(ml_map_f(stickX, -1.0f, 1.0f, -sp30, sp30));
+    yaw_setIdeal(mlNormalizeAngle(yaw_getIdeal() + ml_map_f(stickX, -1.0f, 1.0f, sp34, -sp34)));
 }
 
 // @recomp Patched to allow configuring Y axis inversion when swimming

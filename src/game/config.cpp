@@ -25,15 +25,18 @@ static void add_general_options(recomp::config::Config &config) {
     using EnumOptionVector = const std::vector<recomp::config::ConfigOptionEnumOption>;
 
     static EnumOptionVector note_saving_mode_options = {
-        {banjo::NoteSavingMode::Off, "Off", "Off"},
-        {banjo::NoteSavingMode::On, "On", "On"},
+        {banjo::NoteSavingMode::Off,        "Off",    "Off"},
+        {banjo::NoteSavingMode::OnlyNotes,  "Notes",  "Only Notes"},
+        {banjo::NoteSavingMode::OnlyJinjos, "Jinjos", "Only Jinjos"},
+        // Keeping as "On" to preserve compatibility with previous configs before jinjo saving
+        {banjo::NoteSavingMode::Both,       "On",     "Both"},
     };
     config.add_enum_option(
         banjo::configkeys::general::note_saving_mode,
-        "Note Saving",
-        "Saves collected notes so that you don't need to collect them again when revisiting a level. <recomp-color primary>On</recomp-color> is the default, while <recomp-color primary>off</recomp-color> matches the original game.",
+        "Note & Jinjo Saving",
+        "Saves collected notes and jinjos so that you don't need to collect them again when revisiting a level. <recomp-color primary>Both</recomp-color> is the default, while <recomp-color primary>off</recomp-color> matches the original game.<br /><br />Changing this setting will only take effect when entering/exiting a level, or restarting the game.",
         note_saving_mode_options,
-        banjo::NoteSavingMode::On
+        banjo::NoteSavingMode::Both
     );
     static EnumOptionVector analog_cam_mode_options = {
         {banjo::AnalogCamMode::Off, "Off", "Off"},
@@ -225,7 +228,7 @@ static void set_control_descriptions() {
     recompinput::set_game_input_description(recompinput::GameInput::A, "Used to jump and select options in menus. Also used for flying upwards.");
     recompinput::set_game_input_description(recompinput::GameInput::B, "Used for attacks, which change depending on whether you are stationary, moving, in the air, or crouching.");
     recompinput::set_game_input_description(recompinput::GameInput::Z, "Used to crouch, which enables A, B and the C-Buttons to perform different actions.");
-    recompinput::set_game_input_description(recompinput::GameInput::L, "Unused. Mods may use it for additional features.");
+    recompinput::set_game_input_description(recompinput::GameInput::L, "Used to skip dialogue boxes during game replays (press L + R + B simultaneously). Mods may also use it separately for additional features.");
     recompinput::set_game_input_description(recompinput::GameInput::R, "Used to center the camera behind Banjo on the ground, and to perform tighter turns while flying or swimming.");
     recompinput::set_game_input_description(recompinput::GameInput::START, "Used for pausing and for skipping certain cutscenes.");
     recompinput::set_game_input_description(recompinput::GameInput::C_UP, "Used to enter first-person mode, and to shoot eggs while holding Z.");

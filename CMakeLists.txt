@@ -43,7 +43,10 @@ endif()
 
 set(RT64_STATIC TRUE)
 set(RT64_SDL_WINDOW_VULKAN TRUE)
-add_compile_definitions(HLSL_CPU)
+add_compile_definitions(
+    HLSL_CPU
+    __PRFCHWINTRIN_H
+)
 
 if (RECOMP_FLATPAK)
     add_compile_definitions(RECOMP_FLATPAK)
@@ -65,6 +68,7 @@ target_compile_options(RecompiledFuncs PRIVATE
     -fno-strict-aliasing
     -Wno-unused-variable
     -Wno-implicit-function-declaration
+    -falign-functions=16
 )
 
 target_include_directories(RecompiledFuncs PRIVATE
@@ -87,6 +91,7 @@ target_compile_options(PatchesLib PRIVATE
     -fno-strict-aliasing
     -Wno-unused-variable
     -Wno-implicit-function-declaration
+    -falign-functions=16
 )
 
 target_include_directories(PatchesLib PRIVATE
@@ -264,7 +269,6 @@ endif()
 
 if (CMAKE_SYSTEM_NAME MATCHES "Linux")
     find_package(SDL2 REQUIRED)
-    find_package(X11 REQUIRED)
 
     add_compile_definitions("PLUME_SDL_VULKAN_ENABLED")
     add_compile_definitions("RT64_SDL_WINDOW_VULKAN")
@@ -273,14 +277,6 @@ if (CMAKE_SYSTEM_NAME MATCHES "Linux")
     message(STATUS "SDL2_INCLUDE_DIRS = ${SDL2_INCLUDE_DIRS}")
 
     target_include_directories(BanjoRecompiled PRIVATE ${SDL2_INCLUDE_DIRS})
-
-    message(STATUS "X11_FOUND = ${X11_FOUND}")
-    message(STATUS "X11_Xrandr_FOUND = ${X11_Xrandr_FOUND}")
-    message(STATUS "X11_INCLUDE_DIR = ${X11_INCLUDE_DIR}")
-    message(STATUS "X11_LIBRARIES = ${X11_LIBRARIES}")
-
-    target_include_directories(BanjoRecompiled PRIVATE ${X11_INCLUDE_DIR} ${X11_Xrandr_INCLUDE_PATH})
-    target_link_libraries(BanjoRecompiled PRIVATE ${X11_LIBRARIES} ${X11_Xrandr_LIB})
 
     find_package(Freetype REQUIRED)
 
